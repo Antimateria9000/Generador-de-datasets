@@ -1,0 +1,414 @@
+from __future__ import annotations
+
+import traceback
+from dataclasses import dataclass
+from pathlib import Path
+from uuid import uuid4
+
+from dataset_core.acquisition import AcquisitionService
+from dataset_core.contracts import DatasetRequest
+from dataset_core.factor_policy import resolve_provider_flags
+from dataset_core.logging_runtime import bind_runtime_logger, configure_run_logger
+from dataset_core.manifest_service import build_ticker_manifest
+from dataset_core.naming import (
+    artifact_stem,
+    build_csv_filename,
+    build_range_tag,
+    build_run_directory,
+    build_run_id,
+    sanitize_symbol_for_csv,
+)
+from dataset_core.result_models import ArtifactPaths, TickerResult
+from dataset_core.sanitization_general import GeneralSanitizer
+from dataset_core.sanitization_qlib import QlibSanitizationError, QlibSanitizer
+from dataset_core.schema_builder import DatasetSchemaBuilder
+from dataset_core.serialization import compute_sha256, write_csv, write_json, write_text
+from dataset_core.settings import ensure_directory, ensure_workspace_tree, utc_now_iso
+from dataset_core.validation_external import ExternalValidationService
+from dataset_core.validation_internal import InternalDQService
+from providers.market_context import build_dq_context_payload, resolve_instrument_context
+
+
+@dataclass(frozen=True)
+class RunDirectories:
+    run_id: str
+    workspace_root: Path
+    output_root: Path
+    csv_dir: Path
+    canonical_dir: Path
+    qlib_dir: Path
+    meta_dir: Path
+    report_dir: Path
+    temp_dir: Path
+    log_dir: Path
+    run_log_path: Path
+
+    def primary_csv_dir(self, request: DatasetRequest) -> Path:
+        return self.qlib_dir if request.mode == "qlib" else self.csv_dir
+
+
+class DatasetExportService:
+    def __init__(
+        self,
+        acquisition_service: AcquisitionService | None = None,
+        schema_builder: DatasetSchemaBuilder | None = None,
+        general_sanitizer: GeneralSanitizer | None = None,
+        qlib_sanitizer: QlibSanitizer | None = None,
+        internal_validation: InternalDQService | None = None,
+        external_validation: ExternalValidationService | None = None,
+    ) -> None:
+        self.acquisition_service = acquisition_service or AcquisitionService()
+        self.schema_builder = schema_builder or DatasetSchemaBuilder()
+        self.general_sanitizer = general_sanitizer or GeneralSanitizer()
+        self.qlib_sanitizer = qlib_sanitizer or QlibSanitizer()
+        self.internal_validation = internal_validation or InternalDQService()
+        self.external_validation = external_validation or ExternalValidationService()
+
+    def prepare_run_directories(self, request: DatasetRequest) -> RunDirectories:
+        workspace = ensure_workspace_tree(request.output_dir)
+
+        last_error: FileExistsError | None = None
+        for _ in range(20):
+            run_id = build_run_id()
+            output_root = build_run_directory(request, run_id)
+            try:
+                output_root.mkdir(parents=True, exist_ok=False)
+                export_root = ensure_directory(workspace["exports"] / run_id)
+                meta_dir = ensure_directory(workspace["manifests"] / run_id)
+                report_dir = ensure_directory(workspace["reports"] / run_id)
+                temp_dir = ensure_directory(workspace["temp"] / run_id)
+                log_dir = ensure_directory(workspace["logs"] / run_id)
+                csv_dir = ensure_directory(export_root / "csv")
+                canonical_dir = ensure_directory(export_root / "canonical")
+                qlib_dir = ensure_directory(export_root / "qlib")
+                return RunDirectories(
+                    run_id=run_id,
+                    workspace_root=workspace["workspace_root"],
+                    output_root=output_root,
+                    csv_dir=csv_dir,
+                    canonical_dir=canonical_dir,
+                    qlib_dir=qlib_dir,
+                    meta_dir=meta_dir,
+                    report_dir=report_dir,
+                    temp_dir=temp_dir,
+                    log_dir=log_dir,
+                    run_log_path=log_dir / "dataset_factory.log",
+                )
+            except FileExistsError as exc:
+                last_error = exc
+                continue
+
+        raise RuntimeError("Could not create a unique run directory.") from last_error
+
+    @staticmethod
+    def _canonical_csv_filename(symbol: str, request: DatasetRequest) -> str:
+        safe_symbol = sanitize_symbol_for_csv(symbol)
+        return f"{safe_symbol}_canonical_{request.interval}_{build_range_tag(request.time_range)}.csv"
+
+    def export_ticker(
+        self,
+        ticker: str,
+        request: DatasetRequest,
+        run_dirs: RunDirectories,
+    ) -> TickerResult:
+        warnings: list[str] = []
+        errors: list[str] = []
+        error_context: dict[str, object] | None = None
+        stage = "ticker_start"
+        requested_ticker = ticker.upper()
+        resolved_ticker = requested_ticker
+        provider_symbol = requested_ticker
+        artifact_key = artifact_stem(requested_ticker)
+        runtime_logger = bind_runtime_logger(
+            configure_run_logger(run_dirs.run_id, run_dirs.workspace_root).logger,
+            ticker=requested_ticker,
+        )
+        runtime_logger.info("Starting ticker export.", extra={"stage": stage})
+        artifacts = ArtifactPaths(
+            meta=run_dirs.report_dir / f"{artifact_key}.meta.json",
+            dq=run_dirs.report_dir / f"{artifact_key}.dq.json",
+            external_json=run_dirs.report_dir / f"{artifact_key}.external_validation.json",
+            external_txt=run_dirs.report_dir / f"{artifact_key}.external_validation.txt",
+            manifest=run_dirs.meta_dir / f"{artifact_key}.manifest.json",
+            qlib_report=run_dirs.report_dir / f"{artifact_key}.qlib.json",
+        )
+
+        try:
+            stage = "context_resolution"
+            market_override = None if request.dq_market == "AUTO" else request.dq_market
+            context = resolve_instrument_context(
+                symbol=requested_ticker,
+                market_override=market_override,
+                listing_preference=request.listing_preference,
+            )
+            dq_context = build_dq_context_payload(context)
+            resolved_ticker = str(context.preferred_symbol or requested_ticker).upper()
+            provider_symbol = resolved_ticker
+            warnings.extend(list(context.warnings))
+
+            stage = "acquisition"
+            runtime_logger.info(
+                "Fetching source data for resolved ticker %s.",
+                resolved_ticker,
+                extra={"stage": stage},
+            )
+            auto_adjust, actions, factor_warnings = resolve_provider_flags(
+                auto_adjust=request.auto_adjust,
+                actions=request.actions,
+                requires_factor=request.requires_factor,
+            )
+            warnings.extend(factor_warnings)
+
+            fetch_result = self.acquisition_service.fetch(
+                symbol=resolved_ticker,
+                request=request,
+                auto_adjust=auto_adjust,
+                actions=actions,
+            )
+            provider_metadata = fetch_result.metadata.to_dict()
+            warnings.extend(list(provider_metadata.get("warnings", [])))
+
+            stage = "general_sanitization"
+            runtime_logger.info("Running general sanitization.", extra={"stage": stage})
+            general_result = self.general_sanitizer.sanitize(
+                frame=fetch_result.data,
+                requested_extras=request.extras,
+            )
+            warnings.extend(general_result.warnings)
+
+            stage = "internal_validation"
+            runtime_logger.info("Running internal validation.", extra={"stage": stage})
+            internal_report = self.internal_validation.run(
+                frame=general_result.frame,
+                symbol=resolved_ticker,
+                interval=request.interval,
+                actions=actions,
+                dq_mode=request.dq_mode,
+                dq_context=dq_context,
+            )
+
+            stage = "external_validation"
+            runtime_logger.info("Running external validation.", extra={"stage": stage})
+            external_report = self.external_validation.validate(
+                frame=general_result.frame,
+                symbol=resolved_ticker,
+                start=request.time_range.start_iso,
+                end=request.time_range.end_iso,
+            ).to_dict()
+
+            qlib_payload: dict[str, object] | None = None
+            qlib_compatible = False
+            factor_policy = None
+            qlib_errors: list[str] = []
+
+            if request.mode != "qlib":
+                stage = "schema_build"
+                runtime_logger.info("Building general output schema.", extra={"stage": stage})
+                general_schema = self.schema_builder.build(
+                    frame=general_result.frame,
+                    mode=request.mode,
+                    extras=request.extras,
+                )
+                warnings.extend(general_schema.warnings)
+                artifacts.csv = run_dirs.csv_dir / build_csv_filename(resolved_ticker, request)
+                artifacts.canonical_csv = artifacts.csv
+                write_csv(general_schema.frame, artifacts.csv, temp_dir=run_dirs.temp_dir)
+                factor_policy = general_schema.factor_policy
+                primary_frame = general_schema.frame
+            else:
+                stage = "schema_build"
+                runtime_logger.info("Persisting canonical dataset for Qlib mode.", extra={"stage": stage})
+                canonical_path = run_dirs.canonical_dir / self._canonical_csv_filename(resolved_ticker, request)
+                artifacts.canonical_csv = canonical_path
+                write_csv(general_result.frame, canonical_path, temp_dir=run_dirs.temp_dir)
+                primary_frame = general_result.frame
+
+            if request.qlib_sanitization:
+                stage = "qlib_sanitization"
+                runtime_logger.info("Running Qlib sanitization.", extra={"stage": stage})
+                try:
+                    qlib_result = self.qlib_sanitizer.sanitize(
+                        general_result.frame,
+                        include_adj_close="adj_close" in request.extras,
+                    )
+                    qlib_schema = self.schema_builder.build(
+                        frame=qlib_result.frame,
+                        mode="qlib",
+                        extras=["adj_close"] if "adj_close" in request.extras else [],
+                    )
+                    qlib_compatible = qlib_schema.qlib_compatible
+                    factor_policy = qlib_result.factor_policy
+                    warnings.extend(qlib_result.warnings)
+                    artifacts.qlib_csv = run_dirs.qlib_dir / build_csv_filename(
+                        resolved_ticker,
+                        request,
+                        force_qlib_contract=True,
+                    )
+                    write_csv(qlib_schema.frame, artifacts.qlib_csv, temp_dir=run_dirs.temp_dir)
+                    qlib_payload = dict(qlib_result.technical_report)
+                    qlib_payload["csv_path"] = str(artifacts.qlib_csv.resolve())
+                    qlib_payload["sha256"] = compute_sha256(artifacts.qlib_csv)
+                    write_json(artifacts.qlib_report, qlib_payload, temp_dir=run_dirs.temp_dir)
+                    if request.mode == "qlib":
+                        artifacts.csv = artifacts.qlib_csv
+                        primary_frame = qlib_schema.frame
+                except QlibSanitizationError as exc:
+                    qlib_errors.append(str(exc))
+                    qlib_payload = {
+                        "factor_policy": factor_policy,
+                        "qlib_compatible": False,
+                        "columns_emitted": [],
+                        "warnings": [],
+                        "reasons": qlib_errors,
+                    }
+                    write_json(artifacts.qlib_report, qlib_payload, temp_dir=run_dirs.temp_dir)
+                    if request.mode == "qlib":
+                        raise
+                    warnings.append(f"Qlib sanitization failed: {exc}")
+                    runtime_logger.warning("Qlib sanitization failed: %s", exc, extra={"stage": stage})
+
+            if artifacts.csv is None:
+                raise RuntimeError("The primary export CSV was not generated.")
+
+            csv_sha256 = compute_sha256(artifacts.csv)
+
+            status = "success"
+            if (
+                warnings
+                or internal_report["status"] != "passed"
+                or external_report["status"] != "passed"
+                or (request.qlib_sanitization and not qlib_compatible)
+            ):
+                status = "warning"
+
+            meta_payload = {
+                "export_id": str(uuid4()),
+                "generated_at_utc": utc_now_iso(),
+                "run_id": run_dirs.run_id,
+                "request": request.to_dict(),
+                "ticker_resolution": {
+                    "requested_ticker": requested_ticker,
+                    "resolved_ticker": resolved_ticker,
+                    "provider_symbol": provider_symbol,
+                    "listing_preference": request.listing_preference,
+                },
+                "provider_request": {
+                    "auto_adjust": auto_adjust,
+                    "actions": actions,
+                },
+                "provider_metadata": provider_metadata,
+                "instrument_context": context.to_dict(),
+                "sanitization_general": {
+                    "removed_rows": general_result.removed_rows,
+                    "warnings": general_result.warnings,
+                    "columns": general_result.columns,
+                },
+                "artifacts": artifacts.to_dict(),
+                "dataset": {
+                    "csv_path": str(artifacts.csv.resolve()),
+                    "sha256": csv_sha256,
+                    "row_count": int(len(primary_frame)),
+                    "columns": list(primary_frame.columns),
+                    "qlib_compatible": qlib_compatible,
+                    "qlib_reasons": qlib_errors,
+                    "factor_policy": factor_policy,
+                },
+                "qlib_artifact": qlib_payload,
+                "internal_validation": internal_report,
+                "external_validation": external_report,
+                "warnings": warnings,
+                "run_log_path": str(run_dirs.run_log_path.resolve()),
+            }
+
+            stage = "persistence"
+            runtime_logger.info("Persisting ticker artifacts and manifests.", extra={"stage": stage})
+            write_json(artifacts.meta, meta_payload, temp_dir=run_dirs.temp_dir)
+            write_json(artifacts.dq, internal_report, temp_dir=run_dirs.temp_dir)
+            write_json(artifacts.external_json, external_report, temp_dir=run_dirs.temp_dir)
+            write_text(
+                artifacts.external_txt,
+                self.external_validation.render_text(external_report, resolved_ticker),
+                temp_dir=run_dirs.temp_dir,
+            )
+
+            result = TickerResult(
+                ticker=resolved_ticker,
+                requested_ticker=requested_ticker,
+                resolved_ticker=resolved_ticker,
+                status=status,
+                qlib_compatible=qlib_compatible,
+                columns=list(primary_frame.columns),
+                warnings=warnings,
+                errors=errors,
+                internal_validation_status=str(internal_report["status"]),
+                external_validation_status=str(external_report["status"]),
+                factor_policy=factor_policy,
+                provider_symbol=provider_symbol,
+                provider_warnings=list(provider_metadata.get("warnings", [])),
+                run_log_path=run_dirs.run_log_path,
+                artifacts=artifacts,
+            )
+
+            write_json(artifacts.manifest, build_ticker_manifest(result), temp_dir=run_dirs.temp_dir)
+            bind_runtime_logger(
+                runtime_logger,
+                ticker=resolved_ticker,
+                stage="ticker_finish",
+            ).info("Ticker export finished with status=%s.", status)
+            return result
+
+        except Exception as exc:
+            traceback_text = traceback.format_exc()
+            exception_type = type(exc).__name__
+            error_summary = f"{stage}: {exception_type}: {exc}"
+            errors.append(error_summary)
+            error_context = {
+                "stage": stage,
+                "exception_type": exception_type,
+                "message": str(exc),
+                "traceback_excerpt": "\n".join(traceback_text.strip().splitlines()[-20:])[-4000:],
+                "requested_ticker": requested_ticker,
+                "resolved_ticker": resolved_ticker,
+                "provider_symbol": provider_symbol,
+                "run_log_path": str(run_dirs.run_log_path.resolve()),
+            }
+            runtime_logger.exception(
+                "Ticker export failed.",
+                extra={"stage": stage, "ticker": requested_ticker},
+            )
+            result = TickerResult(
+                ticker=resolved_ticker,
+                requested_ticker=requested_ticker,
+                resolved_ticker=resolved_ticker,
+                status="error",
+                qlib_compatible=False,
+                columns=[],
+                warnings=warnings,
+                errors=errors,
+                provider_symbol=provider_symbol,
+                error_context=error_context,
+                run_log_path=run_dirs.run_log_path,
+                artifacts=artifacts,
+            )
+            error_payload = {
+                "generated_at_utc": utc_now_iso(),
+                "run_id": run_dirs.run_id,
+                "ticker": requested_ticker,
+                "status": "error",
+                "request": request.to_dict(),
+                "warnings": warnings,
+                "errors": errors,
+                "requested_ticker": requested_ticker,
+                "resolved_ticker": resolved_ticker,
+                "provider_symbol": provider_symbol,
+                "run_log_path": str(run_dirs.run_log_path.resolve()),
+                "error": error_context,
+                "stage": stage,
+                "exception_type": exception_type,
+                "message": str(exc),
+                "traceback_excerpt": error_context["traceback_excerpt"],
+                "artifacts": artifacts.to_dict(),
+            }
+            write_json(artifacts.manifest, build_ticker_manifest(result), temp_dir=run_dirs.temp_dir)
+            write_json(artifacts.meta, error_payload, temp_dir=run_dirs.temp_dir)
+            return result

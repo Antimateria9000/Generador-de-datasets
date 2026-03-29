@@ -1,0 +1,5 @@
+MSFT
+AAPL
+MSFT
+
+NVDA
