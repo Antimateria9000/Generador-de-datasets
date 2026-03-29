@@ -92,5 +92,21 @@ def configure_run_logger(run_id: str, workspace_root: Path) -> RunLoggerHandle:
     return RunLoggerHandle(logger=adapter, log_path=log_path)
 
 
+def close_run_logger(run_id: str) -> None:
+    logger_name = f"{RUNTIME_LOGGER_NAME}.{run_id}"
+    logger = logging.getLogger(logger_name)
+    with _LOGGER_LOCK:
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            try:
+                handler.flush()
+            except Exception:
+                pass
+            try:
+                handler.close()
+            except Exception:
+                pass
+
+
 def bind_runtime_logger(logger: RuntimeLoggerAdapter, **context: object) -> RuntimeLoggerAdapter:
     return logger.bind(**context)

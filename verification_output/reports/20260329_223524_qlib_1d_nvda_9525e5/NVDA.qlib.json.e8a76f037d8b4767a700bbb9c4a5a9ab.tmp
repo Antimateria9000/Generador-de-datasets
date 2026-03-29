@@ -1,0 +1,180 @@
+{
+  "factor_policy": "qlib_adjusted_from_adj_close_ratio",
+  "factor_source": "adj_close_ratio",
+  "factor_semantic_checks": [
+    {
+      "name": "adj_close_ratio_integrity",
+      "passed": true,
+      "severity": "info",
+      "message": "Primary factor path derived from adj_close/close.",
+      "details": {
+        "missing_adj_close_rows": 0,
+        "invalid_close_rows": 0,
+        "invalid_factor_rows": 0
+      }
+    },
+    {
+      "name": "split_semantics_consistency",
+      "passed": true,
+      "severity": "info",
+      "message": "Compared split geometry against adj_close/close behaviour.",
+      "details": {
+        "split_event_count": 1,
+        "inconsistent_events": [],
+        "ambiguous_events": []
+      }
+    }
+  ],
+  "qlib_compatible": true,
+  "columns_emitted": [
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "factor",
+    "adj_close"
+  ],
+  "warnings": [],
+  "reasons": [],
+  "contract_checks": [
+    {
+      "name": "required_columns",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated required Qlib columns.",
+      "details": {
+        "missing_columns": []
+      }
+    },
+    {
+      "name": "column_order",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated canonical Qlib column order.",
+      "details": {
+        "observed_prefix": [
+          "date",
+          "open",
+          "high",
+          "low",
+          "close",
+          "volume",
+          "factor"
+        ]
+      }
+    },
+    {
+      "name": "date_integrity",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated Qlib date ordering and uniqueness.",
+      "details": {
+        "invalid_dates": 0,
+        "duplicate_dates": 0,
+        "sorted": true
+      }
+    },
+    {
+      "name": "open_numeric",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated numeric integrity for open.",
+      "details": {
+        "invalid_rows": 0
+      }
+    },
+    {
+      "name": "high_numeric",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated numeric integrity for high.",
+      "details": {
+        "invalid_rows": 0
+      }
+    },
+    {
+      "name": "low_numeric",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated numeric integrity for low.",
+      "details": {
+        "invalid_rows": 0
+      }
+    },
+    {
+      "name": "close_numeric",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated numeric integrity for close.",
+      "details": {
+        "invalid_rows": 0
+      }
+    },
+    {
+      "name": "volume_numeric",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated numeric integrity for volume.",
+      "details": {
+        "invalid_rows": 0
+      }
+    },
+    {
+      "name": "factor_numeric",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated numeric integrity for factor.",
+      "details": {
+        "invalid_rows": 0
+      }
+    },
+    {
+      "name": "ohlc_geometry",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated intrarow OHLC geometry.",
+      "details": {
+        "invalid_rows": 0
+      }
+    },
+    {
+      "name": "close_factor_coherence",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated reconstructed raw close from close/factor.",
+      "details": {
+        "invalid_rows": 0
+      }
+    },
+    {
+      "name": "factor_step_semantics",
+      "passed": true,
+      "severity": "info",
+      "message": "Validated close/factor behaviour around step changes.",
+      "details": {
+        "double_adjust_events": [],
+        "ambiguous_events": []
+      }
+    },
+    {
+      "name": "adj_close_reference_consistency",
+      "passed": true,
+      "severity": "info",
+      "message": "Compared adjusted close against the source adj_close reference.",
+      "details": {
+        "max_relative_diff": 0.0
+      }
+    }
+  ],
+  "metrics": {
+    "max_close_abs_return": 0.015677,
+    "factor_step_events": 0,
+    "unexpected_extreme_price_jumps": 0,
+    "adj_close_max_relative_diff": 0.0
+  },
+  "status": "generated",
+  "csv_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\exports\\20260329_223524_qlib_1d_nvda_9525e5\\qlib\\NVDA.csv",
+  "sha256": "e6301c73927265ce93b23f41238b58abeb401e42e4921146ee427d65d53751cd"
+}

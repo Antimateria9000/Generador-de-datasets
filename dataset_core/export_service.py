@@ -24,6 +24,7 @@ from dataset_core.sanitization_qlib import QlibSanitizationError, QlibSanitizer
 from dataset_core.schema_builder import DatasetSchemaBuilder
 from dataset_core.serialization import compute_sha256, write_csv, write_json, write_text
 from dataset_core.settings import ensure_directory, ensure_workspace_tree, utc_now_iso
+from dataset_core.status_resolution import resolve_ticker_status
 from dataset_core.validation_external import ExternalValidationService
 from dataset_core.validation_internal import InternalDQService
 from providers.market_context import build_dq_context_payload, resolve_instrument_context
@@ -69,7 +70,7 @@ class DatasetExportService:
 
         last_error: FileExistsError | None = None
         for _ in range(20):
-            run_id = build_run_id()
+            run_id = build_run_id(request)
             output_root = build_run_directory(request, run_id)
             try:
                 output_root.mkdir(parents=True, exist_ok=False)
@@ -118,6 +119,9 @@ class DatasetExportService:
         requested_ticker = ticker.upper()
         resolved_ticker = requested_ticker
         provider_symbol = requested_ticker
+        provider_metadata: dict[str, object] = {"warnings": []}
+        auto_adjust = bool(request.auto_adjust)
+        actions = bool(request.actions)
         artifact_key = artifact_stem(requested_ticker)
         runtime_logger = bind_runtime_logger(
             configure_run_logger(run_dirs.run_id, run_dirs.workspace_root).logger,
@@ -198,8 +202,13 @@ class DatasetExportService:
 
             qlib_payload: dict[str, object] | None = None
             qlib_compatible = False
-            factor_policy = None
+            general_factor_policy = None
+            general_factor_source = None
+            qlib_factor_policy = None
+            qlib_factor_source = None
             qlib_errors: list[str] = []
+            general_dataset_payload: dict[str, object] | None = None
+            qlib_dataset_payload: dict[str, object] | None = None
 
             if request.mode != "qlib":
                 stage = "schema_build"
@@ -213,8 +222,20 @@ class DatasetExportService:
                 artifacts.csv = run_dirs.csv_dir / build_csv_filename(resolved_ticker, request)
                 artifacts.canonical_csv = artifacts.csv
                 write_csv(general_schema.frame, artifacts.csv, temp_dir=run_dirs.temp_dir)
-                factor_policy = general_schema.factor_policy
+                general_factor_policy = general_schema.factor_policy
+                general_factor_source = general_schema.factor_source
                 primary_frame = general_schema.frame
+                general_dataset_payload = {
+                    "contract": general_schema.resolved_preset.preset.name,
+                    "csv_path": str(artifacts.csv.resolve()),
+                    "sha256": compute_sha256(artifacts.csv),
+                    "row_count": int(len(primary_frame)),
+                    "columns": list(primary_frame.columns),
+                    "factor_policy": general_factor_policy,
+                    "factor_source": general_factor_source,
+                    "qlib_compatible": False,
+                    "qlib_reasons": [],
+                }
             else:
                 stage = "schema_build"
                 runtime_logger.info("Persisting canonical dataset for Qlib mode.", extra={"stage": stage})
@@ -222,6 +243,17 @@ class DatasetExportService:
                 artifacts.canonical_csv = canonical_path
                 write_csv(general_result.frame, canonical_path, temp_dir=run_dirs.temp_dir)
                 primary_frame = general_result.frame
+                general_dataset_payload = {
+                    "contract": "canonical_general",
+                    "csv_path": str(canonical_path.resolve()),
+                    "sha256": compute_sha256(canonical_path),
+                    "row_count": int(len(primary_frame)),
+                    "columns": list(primary_frame.columns),
+                    "factor_policy": None,
+                    "factor_source": None,
+                    "qlib_compatible": False,
+                    "qlib_reasons": [],
+                }
 
             if request.qlib_sanitization:
                 stage = "qlib_sanitization"
@@ -237,7 +269,8 @@ class DatasetExportService:
                         extras=["adj_close"] if "adj_close" in request.extras else [],
                     )
                     qlib_compatible = qlib_schema.qlib_compatible
-                    factor_policy = qlib_result.factor_policy
+                    qlib_factor_policy = qlib_result.factor_policy
+                    qlib_factor_source = qlib_result.factor_source
                     warnings.extend(qlib_result.warnings)
                     artifacts.qlib_csv = run_dirs.qlib_dir / build_csv_filename(
                         resolved_ticker,
@@ -246,20 +279,48 @@ class DatasetExportService:
                     )
                     write_csv(qlib_schema.frame, artifacts.qlib_csv, temp_dir=run_dirs.temp_dir)
                     qlib_payload = dict(qlib_result.technical_report)
+                    qlib_payload["status"] = "generated"
                     qlib_payload["csv_path"] = str(artifacts.qlib_csv.resolve())
                     qlib_payload["sha256"] = compute_sha256(artifacts.qlib_csv)
                     write_json(artifacts.qlib_report, qlib_payload, temp_dir=run_dirs.temp_dir)
+                    qlib_dataset_payload = {
+                        "contract": "qlib_strict",
+                        "csv_path": str(artifacts.qlib_csv.resolve()),
+                        "sha256": qlib_payload["sha256"],
+                        "row_count": int(len(qlib_schema.frame)),
+                        "columns": list(qlib_schema.frame.columns),
+                        "factor_policy": qlib_factor_policy,
+                        "factor_source": qlib_factor_source,
+                        "qlib_compatible": qlib_compatible,
+                        "qlib_reasons": list(qlib_schema.qlib_reasons),
+                    }
                     if request.mode == "qlib":
                         artifacts.csv = artifacts.qlib_csv
                         primary_frame = qlib_schema.frame
                 except QlibSanitizationError as exc:
                     qlib_errors.append(str(exc))
                     qlib_payload = {
-                        "factor_policy": factor_policy,
+                        "status": "failed",
+                        "factor_policy": qlib_factor_policy,
+                        "factor_source": qlib_factor_source,
                         "qlib_compatible": False,
                         "columns_emitted": [],
                         "warnings": [],
                         "reasons": qlib_errors,
+                        "factor_semantic_checks": [],
+                        "contract_checks": [],
+                        "metrics": {},
+                    }
+                    qlib_dataset_payload = {
+                        "contract": "qlib_strict",
+                        "csv_path": None,
+                        "sha256": None,
+                        "row_count": 0,
+                        "columns": [],
+                        "factor_policy": qlib_factor_policy,
+                        "factor_source": qlib_factor_source,
+                        "qlib_compatible": False,
+                        "qlib_reasons": list(qlib_errors),
                     }
                     write_json(artifacts.qlib_report, qlib_payload, temp_dir=run_dirs.temp_dir)
                     if request.mode == "qlib":
@@ -271,15 +332,31 @@ class DatasetExportService:
                 raise RuntimeError("The primary export CSV was not generated.")
 
             csv_sha256 = compute_sha256(artifacts.csv)
+            primary_factor_policy = qlib_factor_policy if request.mode == "qlib" else general_factor_policy
+            primary_factor_source = qlib_factor_source if request.mode == "qlib" else general_factor_source
 
-            status = "success"
-            if (
-                warnings
-                or internal_report["status"] != "passed"
-                or external_report["status"] != "passed"
-                or (request.qlib_sanitization and not qlib_compatible)
-            ):
-                status = "warning"
+            if qlib_dataset_payload is None and request.mode == "qlib":
+                qlib_dataset_payload = {
+                    "contract": "qlib_strict",
+                    "csv_path": None,
+                    "sha256": None,
+                    "row_count": 0,
+                    "columns": [],
+                    "factor_policy": qlib_factor_policy,
+                    "factor_source": qlib_factor_source,
+                    "qlib_compatible": False,
+                    "qlib_reasons": list(qlib_errors),
+                }
+
+            status_resolution = resolve_ticker_status(
+                warnings=warnings,
+                internal_validation_status=internal_report.get("status"),
+                external_validation_status=external_report.get("status"),
+                qlib_requested=request.qlib_sanitization,
+                qlib_compatible=qlib_compatible,
+                qlib_errors=qlib_errors,
+            )
+            status = status_resolution.status
 
             meta_payload = {
                 "export_id": str(uuid4()),
@@ -303,6 +380,11 @@ class DatasetExportService:
                     "warnings": general_result.warnings,
                     "columns": general_result.columns,
                 },
+                "status_resolution": {
+                    "status": status_resolution.status,
+                    "reasons": list(status_resolution.reasons),
+                    "neutral_notes": list(status_resolution.neutral_notes),
+                },
                 "artifacts": artifacts.to_dict(),
                 "dataset": {
                     "csv_path": str(artifacts.csv.resolve()),
@@ -311,12 +393,19 @@ class DatasetExportService:
                     "columns": list(primary_frame.columns),
                     "qlib_compatible": qlib_compatible,
                     "qlib_reasons": qlib_errors,
-                    "factor_policy": factor_policy,
+                    "factor_policy": primary_factor_policy,
+                    "factor_source": primary_factor_source,
+                },
+                "datasets": {
+                    "primary_contract": "qlib_strict" if request.mode == "qlib" else request.mode,
+                    "general": general_dataset_payload,
+                    "qlib": qlib_dataset_payload,
                 },
                 "qlib_artifact": qlib_payload,
                 "internal_validation": internal_report,
                 "external_validation": external_report,
                 "warnings": warnings,
+                "neutral_notes": list(status_resolution.neutral_notes),
                 "run_log_path": str(run_dirs.run_log_path.resolve()),
             }
 
@@ -338,11 +427,14 @@ class DatasetExportService:
                 status=status,
                 qlib_compatible=qlib_compatible,
                 columns=list(primary_frame.columns),
+                status_reasons=status_resolution.reasons,
+                neutral_notes=status_resolution.neutral_notes,
                 warnings=warnings,
                 errors=errors,
                 internal_validation_status=str(internal_report["status"]),
                 external_validation_status=str(external_report["status"]),
-                factor_policy=factor_policy,
+                factor_policy=primary_factor_policy,
+                factor_source=primary_factor_source,
                 provider_symbol=provider_symbol,
                 provider_warnings=list(provider_metadata.get("warnings", [])),
                 run_log_path=run_dirs.run_log_path,
@@ -383,6 +475,7 @@ class DatasetExportService:
                 status="error",
                 qlib_compatible=False,
                 columns=[],
+                status_reasons=list(errors),
                 warnings=warnings,
                 errors=errors,
                 provider_symbol=provider_symbol,

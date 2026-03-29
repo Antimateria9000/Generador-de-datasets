@@ -51,4 +51,5 @@ def test_schema_builder_extended_output_contains_requested_factor():
         "stock_splits",
         "factor",
     ]
-    assert result.factor_policy == "split_factor_only_from_raw_ohlcv"
+    assert result.factor_policy == "factor_only_from_adj_close_ratio"
+    assert result.factor_source == "adj_close_ratio"

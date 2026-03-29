@@ -1,0 +1,191 @@
+{
+  "export_id": "425f36d9-65de-49d7-b19a-bdc281c0f958",
+  "generated_at_utc": "2026-03-29T22:35:24+00:00",
+  "run_id": "20260329_223524_base_1d_msft_268a2f",
+  "request": {
+    "tickers": [
+      "MSFT"
+    ],
+    "time_range": {
+      "mode": "rolling_years",
+      "start": "2021-03-29T00:00:00",
+      "end": "2026-03-29T00:00:00",
+      "years": 5,
+      "reproducible": false
+    },
+    "output_dir": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output",
+    "interval": "1d",
+    "mode": "base",
+    "extras": [],
+    "listing_preference": "exact_symbol",
+    "dq_mode": "off",
+    "dq_market": "AUTO",
+    "auto_adjust": false,
+    "actions": true,
+    "qlib_sanitization": false,
+    "filename_override": null,
+    "provider": {},
+    "external_validation": {
+      "reference_dir": null,
+      "manual_events_file": null
+    }
+  },
+  "ticker_resolution": {
+    "requested_ticker": "MSFT",
+    "resolved_ticker": "MSFT",
+    "provider_symbol": "MSFT",
+    "listing_preference": "exact_symbol"
+  },
+  "provider_request": {
+    "auto_adjust": false,
+    "actions": true
+  },
+  "provider_metadata": {
+    "provider_name": "TestProvider",
+    "provider_version": "0.0.1",
+    "source": "unit-test",
+    "request_id": "req-MSFT",
+    "requested_symbol": "MSFT",
+    "resolved_symbol": "MSFT",
+    "requested_interval": "1d",
+    "resolved_interval": "1d",
+    "requested_start": "2024-01-01 00:00:00",
+    "requested_end": "2024-01-05 00:00:00",
+    "effective_start": "2024-01-01 00:00:00",
+    "effective_end": "2024-01-05 00:00:00",
+    "actual_start": "2024-01-01 00:00:00",
+    "actual_end": "2024-01-05 00:00:00",
+    "extracted_at_utc": "2026-03-28T00:00:00+00:00",
+    "auto_adjust": false,
+    "actions": true,
+    "backend_used": null,
+    "chunked": false,
+    "chunk_count": 0,
+    "row_count": 5,
+    "warnings": [],
+    "attempts": []
+  },
+  "instrument_context": {
+    "requested_symbol": "MSFT",
+    "preferred_symbol": "MSFT",
+    "listing_preference": "exact_symbol",
+    "warnings": [],
+    "market": "XNYS",
+    "asset_type": "equity",
+    "asset_family": "cash_equity",
+    "quote_type": "EQUITY",
+    "calendar": "XNYS",
+    "timezone": "America/New_York",
+    "currency": "USD",
+    "exchange_name": "NYSE",
+    "exchange_code": "NYQ",
+    "region": "USA",
+    "is_24_7": false,
+    "volume_expected": true,
+    "corporate_actions_expected": true,
+    "calendar_validation_supported": true,
+    "dq_profile": "equity",
+    "confidence": "high",
+    "inference_sources": [
+      "test"
+    ],
+    "raw_metadata": {},
+    "resolved_symbol": "MSFT"
+  },
+  "sanitization_general": {
+    "removed_rows": 0,
+    "warnings": [],
+    "columns": [
+      "date",
+      "open",
+      "high",
+      "low",
+      "close",
+      "adj_close",
+      "volume",
+      "dividends",
+      "stock_splits"
+    ]
+  },
+  "status_resolution": {
+    "status": "success",
+    "reasons": [],
+    "neutral_notes": [
+      "Internal validation was skipped by configuration.",
+      "External validation did not run."
+    ]
+  },
+  "artifacts": {
+    "csv_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\exports\\20260329_223524_base_1d_msft_268a2f\\csv\\MSFT_1d_5y.csv",
+    "canonical_csv_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\exports\\20260329_223524_base_1d_msft_268a2f\\csv\\MSFT_1d_5y.csv",
+    "qlib_csv_path": null,
+    "meta_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\reports\\20260329_223524_base_1d_msft_268a2f\\MSFT.meta.json",
+    "dq_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\reports\\20260329_223524_base_1d_msft_268a2f\\MSFT.dq.json",
+    "external_validation_json_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\reports\\20260329_223524_base_1d_msft_268a2f\\MSFT.external_validation.json",
+    "external_validation_txt_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\reports\\20260329_223524_base_1d_msft_268a2f\\MSFT.external_validation.txt",
+    "manifest_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\manifests\\20260329_223524_base_1d_msft_268a2f\\MSFT.manifest.json",
+    "qlib_report_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\reports\\20260329_223524_base_1d_msft_268a2f\\MSFT.qlib.json"
+  },
+  "dataset": {
+    "csv_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\exports\\20260329_223524_base_1d_msft_268a2f\\csv\\MSFT_1d_5y.csv",
+    "sha256": "f05579e5a19bc444ebca216ab6659138c0d88d13e7efdbb09eac1049c29b32e5",
+    "row_count": 5,
+    "columns": [
+      "date",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume"
+    ],
+    "qlib_compatible": false,
+    "qlib_reasons": [],
+    "factor_policy": null,
+    "factor_source": null
+  },
+  "datasets": {
+    "primary_contract": "base",
+    "general": {
+      "contract": "base",
+      "csv_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\exports\\20260329_223524_base_1d_msft_268a2f\\csv\\MSFT_1d_5y.csv",
+      "sha256": "f05579e5a19bc444ebca216ab6659138c0d88d13e7efdbb09eac1049c29b32e5",
+      "row_count": 5,
+      "columns": [
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
+      ],
+      "factor_policy": null,
+      "factor_source": null,
+      "qlib_compatible": false,
+      "qlib_reasons": []
+    },
+    "qlib": null
+  },
+  "qlib_artifact": null,
+  "internal_validation": {
+    "status": "skipped",
+    "support": {
+      "supported": true,
+      "interval": "1d",
+      "reasons": []
+    },
+    "report": null,
+    "reason": "dq_mode=off"
+  },
+  "external_validation": {
+    "status": "not_validated",
+    "score": null,
+    "reason": "No external reference was available.",
+    "adapter_reports": []
+  },
+  "warnings": [],
+  "neutral_notes": [
+    "Internal validation was skipped by configuration.",
+    "External validation did not run."
+  ],
+  "run_log_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\logs\\20260329_223524_base_1d_msft_268a2f\\dataset_factory.log"
+}

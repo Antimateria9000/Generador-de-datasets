@@ -255,7 +255,10 @@ class DatasetRequest:
 
         object.__setattr__(self, "tickers", normalized_tickers)
         object.__setattr__(self, "output_dir", Path(self.output_dir).expanduser().resolve())
-        object.__setattr__(self, "extras", parse_extras(self.extras))
+        normalized_extras = parse_extras(self.extras)
+        if self.mode == "qlib":
+            normalized_extras = ["factor"] + (["adj_close"] if "adj_close" in normalized_extras else [])
+        object.__setattr__(self, "extras", normalized_extras)
         object.__setattr__(self, "dq_market", str(self.dq_market or "AUTO").strip().upper())
         if self.mode == "qlib" and not self.qlib_sanitization:
             object.__setattr__(self, "qlib_sanitization", True)

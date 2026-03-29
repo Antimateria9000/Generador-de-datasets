@@ -41,3 +41,5 @@ def test_external_validation_reports_not_validated_without_reference(tmp_path, p
     result = batch_result.results[0]
 
     assert result.external_validation_status == "not_validated"
+    assert result.status == "success"
+    assert "External validation did not run." in result.neutral_notes

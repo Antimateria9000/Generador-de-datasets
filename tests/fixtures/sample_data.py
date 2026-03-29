@@ -26,7 +26,7 @@ def make_provider_frame(symbol: str = "MSFT", periods: int = 5) -> pd.DataFrame:
     return frame
 
 
-def make_split_frame() -> pd.DataFrame:
+def make_raw_split_frame() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"]),
@@ -34,10 +34,50 @@ def make_split_frame() -> pd.DataFrame:
             "high": [420.0, 105.0, 106.0, 107.0],
             "low": [390.0, 95.0, 96.0, 97.0],
             "close": [410.0, 102.0, 103.0, 104.0],
-            "adj_close": [410.0, 102.0, 103.0, 104.0],
+            "adj_close": [pd.NA, pd.NA, pd.NA, pd.NA],
             "volume": [1_000.0, 4_000.0, 4_100.0, 4_200.0],
             "dividends": [0.0, 0.0, 0.0, 0.0],
             "stock_splits": [0.0, 4.0, 0.0, 0.0],
+        }
+    )
+
+
+def make_split_frame() -> pd.DataFrame:
+    return make_raw_split_frame()
+
+
+def make_nvda_like_split_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-06-07", "2024-06-10", "2024-06-11", "2024-06-12"]),
+            "open": [120.0, 121.0, 123.0, 124.0],
+            "high": [122.0, 123.0, 125.0, 126.0],
+            "low": [118.5, 119.5, 121.5, 122.5],
+            "close": [120.5, 121.2, 123.1, 124.2],
+            "adj_close": [120.5, 121.2, 123.1, 124.2],
+            "volume": [10_500_000.0, 28_000_000.0, 29_500_000.0, 27_900_000.0],
+            "dividends": [0.0, 0.0, 0.0, 0.0],
+            "stock_splits": [0.0, 10.0, 0.0, 0.0],
+        }
+    )
+
+
+def make_nvda_like_frame_without_adj_close() -> pd.DataFrame:
+    frame = make_nvda_like_split_frame()
+    frame["adj_close"] = pd.NA
+    return frame
+
+
+def make_double_adjusted_qlib_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-06-07", "2024-06-10", "2024-06-11", "2024-06-12"]),
+            "open": [30.0, 121.0, 123.0, 124.0],
+            "high": [30.5, 123.0, 125.0, 126.0],
+            "low": [29.6, 119.5, 121.5, 122.5],
+            "close": [30.125, 121.2, 123.1, 124.2],
+            "volume": [105_000_000.0, 28_000_000.0, 29_500_000.0, 27_900_000.0],
+            "factor": [0.25, 1.0, 1.0, 1.0],
         }
     )
 

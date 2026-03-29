@@ -45,11 +45,14 @@ class TickerResult:
     status: str
     qlib_compatible: bool
     columns: list[str] = field(default_factory=list)
+    status_reasons: list[str] = field(default_factory=list)
+    neutral_notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     internal_validation_status: Optional[str] = None
     external_validation_status: Optional[str] = None
     factor_policy: Optional[str] = None
+    factor_source: Optional[str] = None
     provider_symbol: Optional[str] = None
     provider_warnings: list[str] = field(default_factory=list)
     error_context: Optional[dict[str, object]] = None
@@ -64,11 +67,14 @@ class TickerResult:
             "status": self.status,
             "qlib_compatible": self.qlib_compatible,
             "columns": list(self.columns),
+            "status_reasons": list(self.status_reasons),
+            "neutral_notes": list(self.neutral_notes),
             "warnings": list(self.warnings),
             "errors": list(self.errors),
             "internal_validation_status": self.internal_validation_status,
             "external_validation_status": self.external_validation_status,
             "factor_policy": self.factor_policy,
+            "factor_source": self.factor_source,
             "provider_symbol": self.provider_symbol,
             "provider_warnings": list(self.provider_warnings),
             "error_context": None if self.error_context is None else dict(self.error_context),

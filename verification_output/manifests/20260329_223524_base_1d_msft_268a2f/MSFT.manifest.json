@@ -1,0 +1,40 @@
+{
+  "ticker": "MSFT",
+  "requested_ticker": "MSFT",
+  "resolved_ticker": "MSFT",
+  "status": "success",
+  "qlib_compatible": false,
+  "columns": [
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume"
+  ],
+  "status_reasons": [],
+  "neutral_notes": [
+    "Internal validation was skipped by configuration.",
+    "External validation did not run."
+  ],
+  "warnings": [],
+  "errors": [],
+  "internal_validation_status": "skipped",
+  "external_validation_status": "not_validated",
+  "factor_policy": null,
+  "factor_source": null,
+  "provider_symbol": "MSFT",
+  "provider_warnings": [],
+  "error_context": null,
+  "run_log_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\logs\\20260329_223524_base_1d_msft_268a2f\\dataset_factory.log",
+  "csv_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\exports\\20260329_223524_base_1d_msft_268a2f\\csv\\MSFT_1d_5y.csv",
+  "canonical_csv_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\exports\\20260329_223524_base_1d_msft_268a2f\\csv\\MSFT_1d_5y.csv",
+  "qlib_csv_path": null,
+  "meta_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\reports\\20260329_223524_base_1d_msft_268a2f\\MSFT.meta.json",
+  "dq_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\reports\\20260329_223524_base_1d_msft_268a2f\\MSFT.dq.json",
+  "external_validation_json_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\reports\\20260329_223524_base_1d_msft_268a2f\\MSFT.external_validation.json",
+  "external_validation_txt_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\reports\\20260329_223524_base_1d_msft_268a2f\\MSFT.external_validation.txt",
+  "manifest_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\manifests\\20260329_223524_base_1d_msft_268a2f\\MSFT.manifest.json",
+  "qlib_report_path": "D:\\Analizador_bursatil_3.0\\Generador de datasets\\verification_output\\reports\\20260329_223524_base_1d_msft_268a2f\\MSFT.qlib.json",
+  "generated_at_utc": "2026-03-29T22:35:24+00:00"
+}

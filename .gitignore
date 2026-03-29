@@ -62,3 +62,7 @@ tmp/
 temp/
 .cache/
 workspace/
+Dataset/
+Datasets/
+Versiones antiguas/
+**/.git/

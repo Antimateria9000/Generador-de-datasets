@@ -59,6 +59,10 @@ def render_batch_manifest_text(manifest: dict[str, object]) -> str:
             lines.append(f"  qlib_csv={result.get('qlib_csv_path')}")
         if result.get("qlib_report_path"):
             lines.append(f"  qlib_report={result.get('qlib_report_path')}")
+        if result.get("status_reasons"):
+            lines.append(f"  status_reasons={' | '.join(str(item) for item in result.get('status_reasons', []))}")
+        if result.get("neutral_notes"):
+            lines.append(f"  neutral_notes={' | '.join(str(item) for item in result.get('neutral_notes', []))}")
         warnings = result.get("warnings") or []
         errors = result.get("errors") or []
         if warnings:

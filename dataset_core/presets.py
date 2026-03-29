@@ -11,6 +11,8 @@ class OutputPreset:
     description: str
     default_extras: tuple[str, ...]
     allowed_extras: tuple[str, ...]
+    forced_extras: tuple[str, ...] = ()
+    locked_extras: tuple[str, ...] = ()
     qlib_ready: bool = False
 
 
@@ -39,9 +41,11 @@ PRESETS: dict[str, OutputPreset] = {
     ),
     "qlib": OutputPreset(
         name="qlib",
-        description="Qlib-ready split-adjusted OHLCV with mandatory factor.",
+        description="Closed Qlib contract: adjusted OHLCV, mandatory factor and hard validation.",
         default_extras=("factor",),
         allowed_extras=("factor",) + QLIB_OPTIONAL_COLUMNS,
+        forced_extras=("factor",),
+        locked_extras=("factor",),
         qlib_ready=True,
     ),
 }
@@ -66,6 +70,10 @@ def resolve_preset(name: str, requested_extras: list[str] | tuple[str, ...]) -> 
         if item not in preset.allowed_extras:
             ignored.append(item)
             continue
+        if item not in selected:
+            selected.append(item)
+
+    for item in preset.forced_extras:
         if item not in selected:
             selected.append(item)
 

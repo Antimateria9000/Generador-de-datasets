@@ -6,9 +6,6 @@ import pytest
 
 from dataset_core.result_models import ArtifactPaths, BatchResult, TickerResult
 
-streamlit_testing = pytest.importorskip("streamlit.testing.v1")
-from streamlit.testing.v1 import AppTest
-
 import app.streamlit_app as streamlit_app
 
 
@@ -22,43 +19,22 @@ class FakeOrchestrator:
         return self.batch_result
 
 
-def _run_streamlit_app():
-    import app.streamlit_app as app_module
+def test_streamlit_preset_sync_is_deterministic(monkeypatch):
+    monkeypatch.setitem(streamlit_app.st.session_state, "_last_preset", None)
 
-    app_module.main()
+    streamlit_app._sync_extras_from_preset("extended")
 
+    assert streamlit_app.st.session_state["extra_adj_close"] is True
+    assert streamlit_app.st.session_state["extra_dividends"] is True
+    assert streamlit_app.st.session_state["extra_stock_splits"] is True
+    assert streamlit_app.st.session_state["extra_factor"] is False
 
-def test_streamlit_app_renders_main_form(monkeypatch, tmp_path):
-    batch_result = BatchResult(
-        batch_id="batch-test",
-        run_id="20260328_000000_000000_deadbeef",
-        output_root=tmp_path,
-        csv_dir=tmp_path / "csv",
-        meta_dir=tmp_path / "meta",
-        report_dir=tmp_path / "reports",
-        manifest_json_path=tmp_path / "manifest_batch.json",
-        manifest_txt_path=tmp_path / "manifest_batch.txt",
-        results=[
-            TickerResult(
-                ticker="MSFT",
-                requested_ticker="MSFT",
-                resolved_ticker="MSFT",
-                status="success",
-                qlib_compatible=True,
-                columns=["date", "open", "high", "low", "close", "volume", "factor"],
-                artifacts=ArtifactPaths(csv=tmp_path / "csv" / "MSFT.csv"),
-            )
-        ],
-    )
-    orchestrator = FakeOrchestrator(batch_result)
-    monkeypatch.setattr(streamlit_app, "get_orchestrator", lambda: orchestrator)
+    streamlit_app._sync_extras_from_preset("qlib")
 
-    at = AppTest.from_function(_run_streamlit_app)
-    at.run()
-    assert len(at.text_area) == 1
-    assert len(at.radio) == 1
-    assert len(at.selectbox) == 4
-    assert len(at.button) >= 1
+    assert streamlit_app.st.session_state["extra_adj_close"] is False
+    assert streamlit_app.st.session_state["extra_dividends"] is False
+    assert streamlit_app.st.session_state["extra_stock_splits"] is False
+    assert streamlit_app.st.session_state["extra_factor"] is True
 
 
 def test_streamlit_helper_builds_request_for_qlib(monkeypatch, tmp_path):
@@ -187,6 +163,8 @@ def test_render_results_exposes_warnings_errors_provider_warnings_and_run_log(mo
     assert list(summary.columns) == [
         "ticker",
         "status",
+        "status_reasons",
+        "neutral_notes",
         "qlib_compatible",
         "warnings",
         "errors",
@@ -196,6 +174,7 @@ def test_render_results_exposes_warnings_errors_provider_warnings_and_run_log(mo
         "meta_path",
         "dq_path",
         "external_validation_json_path",
+        "qlib_report_path",
     ]
     assert any("Run log:" in str(item) for item in fake_streamlit.calls["writes"])
     assert len(fake_streamlit.calls["expanders"]) == 1

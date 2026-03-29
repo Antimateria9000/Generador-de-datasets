@@ -19,6 +19,7 @@ class SchemaBuildResult:
     resolved_preset: ResolvedPreset
     warnings: list[str] = field(default_factory=list)
     factor_policy: str | None = None
+    factor_source: str | None = None
     qlib_compatible: bool = False
     qlib_reasons: list[str] = field(default_factory=list)
 
@@ -39,6 +40,7 @@ class DatasetSchemaBuilder:
             for item in resolved_preset.ignored_extras
         ]
         factor_policy = None
+        factor_source = None
         qlib_reasons: list[str] = []
 
         if resolved_preset.preset.name != "qlib" and "factor" in resolved_preset.selected_extras and "factor" not in working.columns:
@@ -48,6 +50,7 @@ class DatasetSchemaBuilder:
                 raise SchemaBuildError(str(exc)) from exc
             working = factor_result.frame
             factor_policy = factor_result.factor_policy
+            factor_source = factor_result.factor_source
             warnings.extend(factor_result.warnings)
 
         final_columns = list(resolved_preset.output_columns)
@@ -69,6 +72,7 @@ class DatasetSchemaBuilder:
             resolved_preset=resolved_preset,
             warnings=warnings,
             factor_policy=factor_policy,
+            factor_source=factor_source,
             qlib_compatible=qlib_compatible,
             qlib_reasons=qlib_reasons,
         )

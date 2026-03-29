@@ -7,12 +7,12 @@ import pandas as pd
 from dataset_core.batch_orchestrator import BatchOrchestrator
 from dataset_core.contracts import DatasetRequest, TemporalRange
 from dataset_core.export_service import DatasetExportService
-from tests.fixtures.sample_data import DummyAcquisitionService, make_split_frame
+from tests.fixtures.sample_data import DummyAcquisitionService, make_nvda_like_split_frame
 
 
 def test_qlib_contract_writes_expected_columns_and_filename(tmp_path, patch_market_context):
     export_service = DatasetExportService(
-        acquisition_service=DummyAcquisitionService({"MSFT": make_split_frame()})
+        acquisition_service=DummyAcquisitionService({"MSFT": make_nvda_like_split_frame()})
     )
     orchestrator = BatchOrchestrator(export_service=export_service)
     request = DatasetRequest(
@@ -31,14 +31,16 @@ def test_qlib_contract_writes_expected_columns_and_filename(tmp_path, patch_mark
     assert result.artifacts.csv.name == "MSFT.csv"
     assert list(frame.columns) == ["date", "open", "high", "low", "close", "volume", "factor"]
     assert manifest["qlib_compatible"] is True
+    assert result.status == "success"
+    assert result.factor_source == "adj_close_ratio"
 
 
 def test_batch_manifest_keeps_global_summary_and_paths(tmp_path, patch_market_context):
     export_service = DatasetExportService(
         acquisition_service=DummyAcquisitionService(
             {
-                "MSFT": make_split_frame(),
-                "AAPL": make_split_frame(),
+                "MSFT": make_nvda_like_split_frame(),
+                "AAPL": make_nvda_like_split_frame(),
             }
         )
     )
@@ -58,3 +60,4 @@ def test_batch_manifest_keeps_global_summary_and_paths(tmp_path, patch_market_co
     assert len(manifest["results"]) == 2
     assert manifest["results"][0]["csv_path"]
     assert manifest["run_log_path"] == str(batch_result.run_log_path.resolve())
+    assert manifest["results"][0]["status"] == "success"

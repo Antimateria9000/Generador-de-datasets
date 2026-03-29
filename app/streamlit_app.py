@@ -15,7 +15,9 @@ from dataset_core import (
     parse_tickers_text,
 )
 from dataset_core.date_windows import build_ui_exact_end_exclusive
+from dataset_core.presets import resolve_preset
 from dataset_core.settings import DEFAULT_OUTPUT_ROOT, DQ_MODES, LISTING_PREFERENCES, PRESET_NAMES, SUPPORTED_INTERVALS
+from dataset_core.workspace_inventory import filter_workspace_runs, list_workspace_runs
 
 PRESET_DEFAULTS = {
     "base": set(),
@@ -144,11 +146,23 @@ def _render_column_block(preset: str, qlib_sanitization: bool) -> None:
     st.checkbox("stock_splits", key="extra_stock_splits", disabled=preset == "qlib")
     st.checkbox("factor", key="extra_factor", disabled=preset == "qlib")
 
+    selected_extras = [
+        extra
+        for extra in ("adj_close", "dividends", "stock_splits", "factor")
+        if st.session_state.get(f"extra_{extra}", False)
+    ]
+    resolved_general = resolve_preset(preset, selected_extras)
+    st.caption(f"Salida principal: `{', '.join(resolved_general.output_columns)}`")
+
     if qlib_sanitization and preset != "qlib":
+        resolved_qlib = resolve_preset("qlib", selected_extras)
         st.caption(
             "El artefacto Qlib paralelo usara solo columnas compatibles con Qlib. "
             "Las columnas extra incompatibles se conservaran en la salida general."
         )
+        st.caption(f"Artefacto Qlib paralelo: `{', '.join(resolved_qlib.output_columns)}`")
+    elif preset == "qlib":
+        st.caption("Preset Qlib cerrado: el backend forzara factor y validacion estricta aunque la UI sea manipulada.")
 
 
 def _render_results(batch_result) -> None:
@@ -172,6 +186,8 @@ def _render_results(batch_result) -> None:
             [
                 "ticker",
                 "status",
+                "status_reasons",
+                "neutral_notes",
                 "qlib_compatible",
                 "warnings",
                 "errors",
@@ -181,6 +197,7 @@ def _render_results(batch_result) -> None:
                 "meta_path",
                 "dq_path",
                 "external_validation_json_path",
+                "qlib_report_path",
             ]
         ]
         st.dataframe(summary, width="stretch")
@@ -192,6 +209,12 @@ def _render_results(batch_result) -> None:
             st.write(f"Provider symbol: `{result.provider_symbol}`")
             if getattr(batch_result, "run_log_path", None):
                 st.write(f"Run log: `{batch_result.run_log_path}`")
+            if result.status_reasons:
+                st.write("Status reasons")
+                st.json(result.status_reasons)
+            if result.neutral_notes:
+                st.write("Neutral notes")
+                st.json(result.neutral_notes)
             if result.warnings:
                 st.write("Warnings")
                 st.json(result.warnings)
@@ -209,6 +232,97 @@ def _render_results(batch_result) -> None:
             if artifact_payload:
                 st.write("Artifacts")
                 st.json(artifact_payload)
+
+
+def _render_workspace_panel(workspace_root_value: str) -> None:
+    st.markdown("## Workspace")
+    workspace_root = Path(workspace_root_value).expanduser().resolve()
+
+    with st.expander("Corridas anteriores", expanded=False):
+        try:
+            inventory = list_workspace_runs(workspace_root)
+        except Exception as exc:
+            st.error(f"No se pudo cargar el inventario del workspace: {exc}")
+            return
+
+        if not inventory:
+            st.info("No hay corridas registradas todavia.")
+            return
+
+        filter_col_1, filter_col_2, filter_col_3 = st.columns(3)
+        with filter_col_1:
+            ticker_filter = st.text_input("Ticker", key="workspace_filter_ticker")
+            created_from = st.date_input("Fecha desde", value=None, key="workspace_filter_from")
+        with filter_col_2:
+            preset_filter = st.selectbox(
+                "Preset",
+                ["", *PRESET_NAMES],
+                format_func=lambda value: "Todos" if value == "" else PRESET_LABELS.get(value, value),
+                key="workspace_filter_preset",
+            )
+            created_to = st.date_input("Fecha hasta", value=None, key="workspace_filter_to")
+        with filter_col_3:
+            interval_options = sorted({record.interval for record in inventory if record.interval})
+            status_filter = st.selectbox(
+                "Estado",
+                ["", "success", "warning", "error", "orphan", "unknown"],
+                format_func=lambda value: "Todos" if value == "" else value,
+                key="workspace_filter_status",
+            )
+            interval_filter = st.selectbox(
+                "Intervalo",
+                ["", *interval_options],
+                format_func=lambda value: "Todos" if value == "" else value,
+                key="workspace_filter_interval",
+            )
+
+        age_filter = st.number_input(
+            "Antiguedad minima (dias)",
+            min_value=0,
+            value=0,
+            step=1,
+            key="workspace_filter_age",
+        )
+        filtered = filter_workspace_runs(
+            inventory,
+            ticker=ticker_filter,
+            preset=preset_filter or None,
+            interval=interval_filter or None,
+            status=status_filter or None,
+            older_than_days=None if int(age_filter) <= 0 else int(age_filter),
+            created_from=None if created_from is None else pd.Timestamp(created_from).isoformat(),
+            created_to=None if created_to is None else pd.Timestamp(created_to).isoformat(),
+        )
+
+        rows = [record.to_dict() for record in filtered]
+        if not rows:
+            st.info("No hay corridas que coincidan con los filtros.")
+            return
+
+        summary = pd.DataFrame(rows)[
+            [
+                "run_id",
+                "created_at_utc",
+                "ticker_summary",
+                "preset",
+                "interval",
+                "overall_status",
+                "size_human",
+                "age_days",
+                "orphaned",
+                "missing_components",
+            ]
+        ]
+        st.dataframe(summary, width="stretch")
+
+        for record in filtered[:20]:
+            with st.expander(f"{record.run_id} | status={record.overall_status}", expanded=False):
+                st.write(f"Tickers: `{', '.join(record.tickers) or '-'}`")
+                st.write(f"Preset: `{record.preset}`")
+                st.write(f"Intervalo: `{record.interval}`")
+                st.write(f"Tamanio: `{record.size_human}`")
+                st.write(f"Workspace root: `{record.workspace_root}`")
+                st.json(record.to_dict())
 
 
 def main() -> None:
@@ -321,6 +435,8 @@ def main() -> None:
 
     if "last_batch_result" in st.session_state:
         _render_results(st.session_state["last_batch_result"])
+
+    _render_workspace_panel(output_dir)
 
 
 if __name__ == "__main__":

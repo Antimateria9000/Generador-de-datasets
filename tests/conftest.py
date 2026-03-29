@@ -4,11 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from hypothesis.configuration import set_hypothesis_home_dir
 
 from tests.fixtures.sample_data import FakeContext, make_dq_context_payload, make_provider_frame
-
-set_hypothesis_home_dir(Path(__file__).resolve().parents[1] / "workspace" / "cache" / "hypothesis")
 
 
 @pytest.fixture

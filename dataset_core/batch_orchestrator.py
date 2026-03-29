@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from dataset_core.contracts import DatasetRequest, ExternalValidationConfig
 from dataset_core.export_service import DatasetExportService
-from dataset_core.logging_runtime import bind_runtime_logger, configure_run_logger
+from dataset_core.logging_runtime import bind_runtime_logger, close_run_logger, configure_run_logger
 from dataset_core.manifest_service import build_batch_manifest, render_batch_manifest_text
 from dataset_core.reference_adapters import CSVReferenceAdapter, ManualEventAdapter
 from dataset_core.result_models import BatchResult
@@ -87,3 +87,5 @@ class BatchOrchestrator:
         except Exception:
             bind_runtime_logger(run_logger_handle.logger, stage="batch_failure").exception("Batch export failed.")
             raise
+        finally:
+            close_run_logger(run_dirs.run_id)

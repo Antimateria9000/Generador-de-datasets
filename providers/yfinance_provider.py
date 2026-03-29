@@ -359,9 +359,6 @@ def _select_export_columns(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=EXPORT_COLUMNS)
 
     out = df.copy()
-
-    if "Adj Close" not in out.columns and "Close" in out.columns:
-        out["Adj Close"] = out["Close"]
     if "Dividends" not in out.columns:
         out["Dividends"] = 0.0
     if "Stock Splits" not in out.columns:
@@ -392,6 +389,8 @@ def _select_export_columns(df: pd.DataFrame) -> pd.DataFrame:
                 out[column] = 0.0
             elif column == "volume":
                 out[column] = 0
+            elif column == "adj_close":
+                out[column] = pd.NA
             else:
                 out[column] = pd.NA
 
@@ -867,6 +866,10 @@ class YFinanceProvider:
                     metadata.chunked = chunked
                     metadata.chunk_count = chunk_count
                     metadata.row_count = int(len(frame))
+                    if "adj_close" in frame.columns and pd.to_numeric(frame["adj_close"], errors="coerce").isna().all():
+                        metadata.warnings.append(
+                            "Provider returned no usable adj_close values; Qlib factor policy may need controlled fallback handling."
+                        )
 
                     frame = _attach_metadata(frame, metadata)
                     return FetchResult(symbol=requested_symbol, data=frame, metadata=metadata)

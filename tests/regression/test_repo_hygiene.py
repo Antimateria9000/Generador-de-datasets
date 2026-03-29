@@ -53,7 +53,15 @@ def test_clean_workspace_script_preserves_directory_tree(tmp_path, monkeypatch):
     nested_file.parent.mkdir(parents=True, exist_ok=True)
     nested_file.write_text(make_provider_frame().to_csv(index=False), encoding="utf-8")
 
-    exit_code = main()
+    exit_code = main(
+        [
+            "--workspace-root",
+            str(workspace_root),
+            "--all",
+            "--confirm-all",
+            "DELETE",
+        ]
+    )
 
     assert exit_code == 0
     assert (workspace_root / "exports").exists()
