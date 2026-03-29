@@ -1,0 +1,63 @@
+# Entorno virtual
+.venv/
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Distribución / build
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# VS Code / IDEs
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Variables de entorno / secretos
+.env
+.env.*
+*.env
+
+# Datos pesados o temporales
+*.parquet
+*.feather
+*.h5
+*.pkl
+*.joblib
+*.sqlite
+*.db
+mlruns/
+wandb/
+
+# Modelos / checkpoints
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+models/
+
+# Archivos temporales
+tmp/
+temp/
+.cache/
