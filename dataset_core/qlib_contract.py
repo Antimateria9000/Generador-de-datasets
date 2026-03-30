@@ -108,7 +108,7 @@ def validate_qlib_frame(
         observed_prefix=columns[: len(required)],
     )
 
-    working = frame.copy()
+    working = frame.copy().reset_index(drop=True)
     working["date"] = pd.to_datetime(working.get("date"), errors="coerce")
 
     invalid_dates = int(working["date"].isna().sum())
@@ -234,8 +234,9 @@ def validate_qlib_frame(
 
             observed_close_ratio = float(close_ratio.iloc[index]) if pd.notna(close_ratio.iloc[index]) else np.nan
             observed_raw_ratio = float(raw_ratio.iloc[index]) if pd.notna(raw_ratio.iloc[index]) else np.nan
+            event_date = working["date"].iloc[index]
             event_payload = {
-                "date": working.loc[index, "date"].strftime("%Y-%m-%d"),
+                "date": None if pd.isna(event_date) else event_date.strftime("%Y-%m-%d"),
                 "factor_ratio": round(observed_factor_ratio, 8),
                 "close_ratio": None if not np.isfinite(observed_close_ratio) else round(observed_close_ratio, 8),
                 "raw_ratio": None if not np.isfinite(observed_raw_ratio) else round(observed_raw_ratio, 8),

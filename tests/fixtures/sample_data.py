@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -114,14 +115,69 @@ def make_fetch_result(symbol: str, frame: pd.DataFrame) -> FetchResult:
 class DummyAcquisitionService:
     def __init__(self, datasets: dict[str, pd.DataFrame | Exception]) -> None:
         self.datasets = {key.upper(): value for key, value in datasets.items()}
+        self.last_session = None
 
-    def fetch(self, symbol, request, auto_adjust, actions):
-        value = self.datasets.get(symbol.upper())
-        if value is None:
-            raise ValueError(f"Unknown symbol in test service: {symbol}")
-        if isinstance(value, Exception):
-            raise value
-        return make_fetch_result(symbol.upper(), value)
+    def create_session(self, request):
+        session = SimpleNamespace(
+            request=request,
+            bundle_cache={},
+            metrics={
+                "provider_instances": 1,
+                "fetch_calls": 0,
+                "fetch_many_calls": 0,
+                "bundle_cache_hits": 0,
+                "bundle_cache_misses": 0,
+            },
+        )
+        self.last_session = session
+        return session
+
+    @staticmethod
+    def _normalize_symbols(symbols):
+        seen = set()
+        normalized = []
+        for item in symbols:
+            symbol = str(item or "").strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            normalized.append(symbol)
+        return normalized
+
+    def fetch_many(self, symbols, request, auto_adjust, actions, *, session=None):
+        active_session = session or self.create_session(request)
+        normalized_symbols = self._normalize_symbols(symbols)
+        cache_key = (
+            tuple(normalized_symbols),
+            request.interval,
+            request.time_range.start_iso,
+            request.time_range.end_iso,
+            bool(auto_adjust),
+            bool(actions),
+        )
+        cached = active_session.bundle_cache.get(cache_key)
+        if cached is not None:
+            active_session.metrics["bundle_cache_hits"] += 1
+            return {symbol: cached[symbol] for symbol in normalized_symbols}
+
+        active_session.metrics["bundle_cache_misses"] += 1
+        active_session.metrics["fetch_many_calls"] += 1
+        bundle = {}
+        for symbol in normalized_symbols:
+            value = self.datasets.get(symbol)
+            if value is None:
+                raise ValueError(f"Unknown symbol in test service: {symbol}")
+            if isinstance(value, Exception):
+                raise value
+            bundle[symbol] = make_fetch_result(symbol, value)
+
+        active_session.bundle_cache[cache_key] = dict(bundle)
+        return bundle
+
+    def fetch(self, symbol, request, auto_adjust, actions, *, session=None):
+        active_session = session or self.create_session(request)
+        active_session.metrics["fetch_calls"] += 1
+        return self.fetch_many([symbol], request, auto_adjust, actions, session=active_session)[symbol.upper()]
 
 
 @dataclass
@@ -147,6 +203,9 @@ class FakeContext:
     dq_profile: str = "equity"
     confidence: str = "high"
     inference_sources: list[str] | None = None
+    structured_warnings: list[dict] | None = None
+    resolution_trace: list[dict] | None = None
+    resolver_metrics: dict | None = None
     raw_metadata: dict | None = None
     resolved_symbol: str | None = None
 
@@ -155,6 +214,12 @@ class FakeContext:
             self.warnings = []
         if self.inference_sources is None:
             self.inference_sources = ["test"]
+        if self.structured_warnings is None:
+            self.structured_warnings = []
+        if self.resolution_trace is None:
+            self.resolution_trace = []
+        if self.resolver_metrics is None:
+            self.resolver_metrics = {}
         if self.raw_metadata is None:
             self.raw_metadata = {}
         if self.resolved_symbol is None:
@@ -186,5 +251,8 @@ def make_dq_context_payload(context: FakeContext) -> dict[str, object]:
         "dq_profile": context.dq_profile,
         "confidence": context.confidence,
         "warnings": list(context.warnings),
+        "structured_warnings": list(context.structured_warnings),
         "inference_sources": list(context.inference_sources),
+        "resolution_trace": list(context.resolution_trace),
+        "resolver_metrics": dict(context.resolver_metrics),
     }

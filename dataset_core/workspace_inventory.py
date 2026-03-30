@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from dataset_core.settings import ensure_workspace_tree
+from dataset_core.settings import resolve_workspace_tree
 
 _RUN_COMPONENT_KEYS = ("runs", "exports", "manifests", "reports", "temp", "logs")
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -23,7 +23,7 @@ def _safe_timestamp(value: object) -> pd.Timestamp | None:
 
 
 def _resolve_component_paths(workspace_root: Path, run_id: str) -> dict[str, Path]:
-    workspace = ensure_workspace_tree(workspace_root)
+    workspace = resolve_workspace_tree(workspace_root)
     return {key: workspace[key] / run_id for key in _RUN_COMPONENT_KEYS}
 
 
@@ -242,11 +242,15 @@ class WorkspaceRunRecord:
 
 
 def list_workspace_runs(workspace_root: Path | None = None) -> list[WorkspaceRunRecord]:
-    workspace = ensure_workspace_tree(workspace_root)
+    workspace = resolve_workspace_tree(workspace_root)
     root = workspace["workspace_root"]
+    if not root.exists():
+        return []
     run_ids: set[str] = set()
 
     for key in _RUN_COMPONENT_KEYS:
+        if not workspace[key].exists():
+            continue
         for candidate in workspace[key].iterdir():
             if candidate.name.startswith("."):
                 continue

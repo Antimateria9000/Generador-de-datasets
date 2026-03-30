@@ -175,3 +175,81 @@ def test_batch_orchestrator_cleans_orphan_tmp_files_after_run(tmp_path, patch_ma
     )
 
     assert not stray_tmp.exists()
+
+
+def test_batch_orchestrator_sequential_mode_smoke(tmp_path, patch_market_context):
+    export_service = DatasetExportService(
+        acquisition_service=DummyAcquisitionService({"MSFT": make_provider_frame("MSFT")})
+    )
+
+    batch_result = BatchOrchestrator(export_service=export_service).run(
+        DatasetRequest(
+            tickers=["MSFT"],
+            time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+            output_dir=tmp_path,
+            dq_mode="off",
+        ),
+        execution_mode="sequential",
+    )
+
+    assert batch_result.results[0].status == "success"
+    assert batch_result.results[0].artifacts.csv.exists()
+    assert export_service.acquisition_service.last_session.metrics["fetch_calls"] == 1
+
+
+def test_batch_orchestrator_keeps_logical_equivalence_between_sequential_and_concurrent_modes(tmp_path, patch_market_context):
+    datasets = {
+        "MSFT": make_provider_frame("MSFT"),
+        "AAPL": make_provider_frame("AAPL"),
+        "NVDA": make_provider_frame("NVDA"),
+    }
+
+    sequential_service = DatasetExportService(acquisition_service=DummyAcquisitionService(datasets))
+    concurrent_service = DatasetExportService(acquisition_service=DummyAcquisitionService(datasets))
+
+    sequential_request = DatasetRequest(
+        tickers=["MSFT", "AAPL", "NVDA"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        output_dir=tmp_path / "sequential",
+        dq_mode="off",
+    )
+    concurrent_request = DatasetRequest(
+        tickers=["MSFT", "AAPL", "NVDA"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        output_dir=tmp_path / "concurrent",
+        dq_mode="off",
+    )
+
+    sequential = BatchOrchestrator(export_service=sequential_service).run(
+        sequential_request,
+        execution_mode="sequential",
+    )
+    concurrent = BatchOrchestrator(export_service=concurrent_service).run(
+        concurrent_request,
+        execution_mode="concurrent",
+    )
+
+    sequential_manifest = json.loads(sequential.manifest_json_path.read_text(encoding="utf-8"))
+    concurrent_manifest = json.loads(concurrent.manifest_json_path.read_text(encoding="utf-8"))
+
+    def _logical_signature(batch_result):
+        return [
+            (
+                result.requested_ticker,
+                result.resolved_ticker,
+                result.status,
+                result.qlib_compatible,
+                tuple(result.columns),
+            )
+            for result in batch_result.results
+        ]
+
+    assert _logical_signature(sequential) == _logical_signature(concurrent)
+    assert [item["requested_ticker"] for item in sequential_manifest["results"]] == ["MSFT", "AAPL", "NVDA"]
+    assert [item["requested_ticker"] for item in concurrent_manifest["results"]] == ["MSFT", "AAPL", "NVDA"]
+    assert [item["status"] for item in sequential_manifest["results"]] == [
+        item["status"] for item in concurrent_manifest["results"]
+    ]
+    assert sequential_service.acquisition_service.last_session.metrics["fetch_calls"] == 3
+    assert concurrent_service.acquisition_service.last_session.metrics["fetch_calls"] == 0
+    assert concurrent_service.acquisition_service.last_session.metrics["fetch_many_calls"] == 1

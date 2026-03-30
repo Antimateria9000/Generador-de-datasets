@@ -79,20 +79,26 @@ def ensure_directory(path: Path) -> Path:
     return path
 
 
-def ensure_workspace_tree(base_root: Path | None = None) -> dict[str, Path]:
+def resolve_workspace_tree(base_root: Path | None = None) -> dict[str, Path]:
     workspace_root = Path(base_root or WORKSPACE_ROOT).expanduser().resolve()
-    directories = {
-        "workspace_root": ensure_directory(workspace_root),
-        "runs": ensure_directory(workspace_root / "runs"),
-        "exports": ensure_directory(workspace_root / "exports"),
-        "manifests": ensure_directory(workspace_root / "manifests"),
-        "reports": ensure_directory(workspace_root / "reports"),
-        "references": ensure_directory(workspace_root / "references"),
-        "cache": ensure_directory(workspace_root / "cache"),
-        "temp": ensure_directory(workspace_root / "temp"),
-        "logs": ensure_directory(workspace_root / "logs"),
-        "audits": ensure_directory(workspace_root / "audits"),
+    return {
+        "workspace_root": workspace_root,
+        "runs": workspace_root / "runs",
+        "exports": workspace_root / "exports",
+        "manifests": workspace_root / "manifests",
+        "reports": workspace_root / "reports",
+        "references": workspace_root / "references",
+        "cache": workspace_root / "cache",
+        "temp": workspace_root / "temp",
+        "logs": workspace_root / "logs",
+        "audits": workspace_root / "audits",
     }
+
+
+def ensure_workspace_tree(base_root: Path | None = None) -> dict[str, Path]:
+    directories = resolve_workspace_tree(base_root)
+    for path in directories.values():
+        ensure_directory(path)
     return directories
 
 

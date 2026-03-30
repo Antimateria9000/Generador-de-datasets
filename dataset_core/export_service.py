@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from dataset_core.acquisition import AcquisitionService
+from dataset_core.acquisition import AcquisitionService, ProviderSession
 from dataset_core.contracts import DatasetRequest
 from dataset_core.factor_policy import resolve_provider_flags
 from dataset_core.logging_runtime import bind_runtime_logger, configure_run_logger
@@ -27,7 +27,7 @@ from dataset_core.settings import ensure_directory, ensure_workspace_tree, utc_n
 from dataset_core.status_resolution import resolve_ticker_status
 from dataset_core.validation_external import ExternalValidationService
 from dataset_core.validation_internal import InternalDQService
-from providers.market_context import build_dq_context_payload, resolve_instrument_context
+from providers.market_context import ContextResolver, build_dq_context_payload, resolve_instrument_context
 
 
 @dataclass(frozen=True)
@@ -64,6 +64,22 @@ class DatasetExportService:
         self.qlib_sanitizer = qlib_sanitizer or QlibSanitizer()
         self.internal_validation = internal_validation or InternalDQService()
         self.external_validation = external_validation or ExternalValidationService()
+
+    def resolve_context(
+        self,
+        ticker: str,
+        request: DatasetRequest,
+        *,
+        context_resolver: ContextResolver | None = None,
+    ):
+        market_override = None if request.dq_market == "AUTO" else request.dq_market
+        return resolve_instrument_context(
+            symbol=str(ticker or "").strip().upper(),
+            market_override=market_override,
+            listing_preference=request.listing_preference,
+            metadata_timeout=request.provider.metadata_timeout or request.provider.timeout,
+            resolver=context_resolver,
+        )
 
     def prepare_run_directories(self, request: DatasetRequest) -> RunDirectories:
         workspace = ensure_workspace_tree(request.output_dir)
@@ -111,6 +127,12 @@ class DatasetExportService:
         ticker: str,
         request: DatasetRequest,
         run_dirs: RunDirectories,
+        *,
+        prefetched_context=None,
+        prefetched_fetch_result=None,
+        provider_session: ProviderSession | None = None,
+        context_resolver: ContextResolver | None = None,
+        resolved_provider_flags: tuple[bool, bool, list[str]] | None = None,
     ) -> TickerResult:
         material_warnings: list[str] = []
         neutral_notes: list[str] = []
@@ -141,12 +163,13 @@ class DatasetExportService:
 
         try:
             stage = "context_resolution"
-            market_override = None if request.dq_market == "AUTO" else request.dq_market
-            context = resolve_instrument_context(
-                symbol=requested_ticker,
-                market_override=market_override,
-                listing_preference=request.listing_preference,
-            )
+            context = prefetched_context
+            if context is None:
+                context = self.resolve_context(
+                    requested_ticker,
+                    request,
+                    context_resolver=context_resolver,
+                )
             dq_context = build_dq_context_payload(context)
             resolved_ticker = str(context.preferred_symbol or requested_ticker).upper()
             provider_symbol = resolved_ticker
@@ -158,19 +181,25 @@ class DatasetExportService:
                 resolved_ticker,
                 extra={"stage": stage},
             )
-            auto_adjust, actions, factor_warnings = resolve_provider_flags(
-                auto_adjust=request.auto_adjust,
-                actions=request.actions,
-                requires_factor=request.requires_factor,
-            )
+            if resolved_provider_flags is None:
+                auto_adjust, actions, factor_warnings = resolve_provider_flags(
+                    auto_adjust=request.auto_adjust,
+                    actions=request.actions,
+                    requires_factor=request.requires_factor,
+                )
+            else:
+                auto_adjust, actions, factor_warnings = resolved_provider_flags
             neutral_notes.extend(factor_warnings)
 
-            fetch_result = self.acquisition_service.fetch(
-                symbol=resolved_ticker,
-                request=request,
-                auto_adjust=auto_adjust,
-                actions=actions,
-            )
+            fetch_result = prefetched_fetch_result
+            if fetch_result is None:
+                fetch_result = self.acquisition_service.fetch(
+                    symbol=resolved_ticker,
+                    request=request,
+                    auto_adjust=auto_adjust,
+                    actions=actions,
+                    session=provider_session,
+                )
             provider_metadata = fetch_result.metadata.to_dict()
             provider_warnings = list(provider_metadata.get("warnings", []))
             neutral_notes.extend(provider_warnings)

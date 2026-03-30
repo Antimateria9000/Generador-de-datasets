@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from dataset_core.workspace_inventory import WorkspaceRunRecord, filter_workspace_runs
+from dataset_core.workspace_inventory import WorkspaceRunRecord, filter_workspace_runs, list_workspace_runs
 
 
 def _component_paths(root: Path) -> dict[str, Path]:
@@ -54,3 +54,12 @@ def test_filter_workspace_runs_rejects_negative_older_than_days(tmp_path):
 
     with pytest.raises(ValueError, match="older_than_days must be >= 0"):
         filter_workspace_runs([record], older_than_days=-1)
+
+
+def test_list_workspace_runs_does_not_materialize_missing_workspace(tmp_path):
+    missing_root = tmp_path / "missing-workspace"
+
+    records = list_workspace_runs(missing_root)
+
+    assert records == []
+    assert not missing_root.exists()

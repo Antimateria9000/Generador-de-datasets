@@ -24,7 +24,13 @@ def reference_dir(tmp_path: Path, sample_frame: pd.DataFrame) -> Path:
 
 @pytest.fixture
 def patch_market_context(monkeypatch):
-    def fake_resolve_instrument_context(symbol: str, market_override=None, listing_preference: str = "exact_symbol"):
+    def fake_resolve_instrument_context(
+        symbol: str,
+        market_override=None,
+        listing_preference: str = "exact_symbol",
+        metadata_timeout=None,
+        **kwargs,
+    ):
         return FakeContext(
             requested_symbol=symbol.upper(),
             preferred_symbol=symbol.upper(),

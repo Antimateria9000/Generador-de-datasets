@@ -195,6 +195,7 @@ class ProviderConfig:
     max_workers: Optional[int] = None
     retries: Optional[int] = None
     timeout: Optional[float] = None
+    metadata_timeout: Optional[float] = None
     min_delay: Optional[float] = None
     max_intraday_lookback_days: Optional[int] = None
     cache_dir: Optional[Path] = None
@@ -208,6 +209,8 @@ class ProviderConfig:
             payload["retries"] = int(self.retries)
         if self.timeout is not None:
             payload["timeout"] = float(self.timeout)
+        if self.metadata_timeout is not None:
+            payload["metadata_timeout"] = float(self.metadata_timeout)
         if self.min_delay is not None:
             payload["min_delay"] = float(self.min_delay)
         if self.max_intraday_lookback_days is not None:

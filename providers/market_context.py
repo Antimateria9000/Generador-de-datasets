@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from threading import Event, Thread
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yfinance as yf
 
@@ -36,10 +37,23 @@ class InstrumentContext:
     confidence: str = "medium"
     inference_sources: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    structured_warnings: List[Dict[str, Any]] = field(default_factory=list)
+    resolution_trace: List[Dict[str, Any]] = field(default_factory=list)
+    resolver_metrics: Dict[str, Any] = field(default_factory=dict)
     raw_metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class RawMetadataResult:
+    history_metadata: Dict[str, Any]
+    fast_info: Dict[str, Any]
+    info: Dict[str, Any]
+    warnings: List[str] = field(default_factory=list)
+    structured_warnings: List[Dict[str, Any]] = field(default_factory=list)
+    query_trace: List[Dict[str, Any]] = field(default_factory=list)
 
 
 _SUFFIX_RULES: Dict[str, Dict[str, str]] = {
@@ -307,43 +321,116 @@ def _resolve_calendar_from_metadata(
     }
 
 
-def _fetch_raw_metadata(symbol: str) -> Dict[str, Dict[str, Any]]:
-    ticker = yf.Ticker(symbol)
+def _run_with_timeout(
+    supplier: Callable[[], Any],
+    *,
+    timeout_seconds: float | None,
+) -> Any:
+    if timeout_seconds is None:
+        return supplier()
 
-    history_metadata: Dict[str, Any] = {}
-    try:
-        history_metadata = _safe_get_dict(getattr(ticker, "history_metadata", {}))
-        if not history_metadata and hasattr(ticker, "get_history_metadata"):
-            history_metadata = _safe_get_dict(ticker.get_history_metadata())
-    except Exception as exc:
-        logger.debug("history_metadata lookup failed for %s: %s", symbol, exc)
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+    completed = Event()
 
-    fast_info: Dict[str, Any] = {}
-    try:
-        fast_info = _safe_get_dict(getattr(ticker, "fast_info", {}))
-        if not fast_info and hasattr(ticker, "get_fast_info"):
-            fast_info = _safe_get_dict(ticker.get_fast_info())
-    except Exception as exc:
-        logger.debug("fast_info lookup failed for %s: %s", symbol, exc)
+    def _target() -> None:
+        try:
+            result["value"] = supplier()
+        except BaseException as exc:  # pragma: no cover - defensive handoff from worker thread
+            error["exc"] = exc
+        finally:
+            completed.set()
 
-    info: Dict[str, Any] = {}
-    try:
-        info = _safe_get_dict(getattr(ticker, "info", {}))
-    except Exception as exc:
-        logger.debug("info lookup failed for %s: %s", symbol, exc)
+    worker = Thread(target=_target, daemon=True)
+    worker.start()
+    if not completed.wait(float(timeout_seconds)):
+        raise TimeoutError(f"metadata lookup exceeded timeout={timeout_seconds}s")
+    if "exc" in error:
+        raise error["exc"]
+    return result.get("value")
 
+
+def _metadata_warning(
+    *,
+    symbol: str,
+    query: str,
+    timeout_seconds: float | None,
+    reason: str,
+) -> Dict[str, Any]:
     return {
-        "history_metadata": history_metadata,
-        "fast_info": fast_info,
-        "info": info,
+        "code": "metadata_timeout" if reason == "timeout" else "metadata_lookup_error",
+        "symbol": symbol,
+        "query": query,
+        "timeout_seconds": timeout_seconds,
+        "reason": reason,
+        "message": (
+            f"Metadata query '{query}' for {symbol} exceeded timeout={timeout_seconds}s."
+            if reason == "timeout"
+            else f"Metadata query '{query}' for {symbol} failed."
+        ),
     }
 
 
-def _snapshot_symbol(symbol: str) -> Dict[str, Any]:
-    raw = _fetch_raw_metadata(symbol)
-    history_metadata = raw["history_metadata"]
-    fast_info = raw["fast_info"]
-    info = raw["info"]
+def _fetch_raw_metadata(symbol: str, metadata_timeout: float | None = None) -> RawMetadataResult:
+    ticker = yf.Ticker(symbol)
+    warnings: List[str] = []
+    structured_warnings: List[Dict[str, Any]] = []
+    query_trace: List[Dict[str, Any]] = []
+
+    def _lookup(query: str, supplier: Callable[[], Any]) -> Dict[str, Any]:
+        try:
+            value = _run_with_timeout(supplier, timeout_seconds=metadata_timeout)
+            payload = _safe_get_dict(value)
+            query_trace.append({"query": query, "status": "ok", "from_cache": False, "keys": sorted(payload.keys())})
+            return payload
+        except TimeoutError:
+            warning = _metadata_warning(
+                symbol=symbol,
+                query=query,
+                timeout_seconds=metadata_timeout,
+                reason="timeout",
+            )
+            warnings.append(warning["message"])
+            structured_warnings.append(warning)
+            query_trace.append({"query": query, "status": "timeout", "from_cache": False})
+        except Exception as exc:
+            logger.debug("%s lookup failed for %s: %s", query, symbol, exc)
+            warning = _metadata_warning(
+                symbol=symbol,
+                query=query,
+                timeout_seconds=metadata_timeout,
+                reason="error",
+            )
+            warning["error"] = str(exc)
+            structured_warnings.append(warning)
+            query_trace.append({"query": query, "status": "error", "from_cache": False, "error": str(exc)})
+        return {}
+
+    history_metadata = _lookup("history_metadata", lambda: getattr(ticker, "history_metadata", {}))
+    if not history_metadata and hasattr(ticker, "get_history_metadata"):
+        history_metadata = _lookup("get_history_metadata", ticker.get_history_metadata)
+
+    fast_info = _lookup("fast_info", lambda: getattr(ticker, "fast_info", {}))
+    if not fast_info and hasattr(ticker, "get_fast_info"):
+        fast_info = _lookup("get_fast_info", ticker.get_fast_info)
+
+    info = _lookup("info", lambda: getattr(ticker, "info", {}))
+
+    return RawMetadataResult(
+        history_metadata=history_metadata,
+        fast_info=fast_info,
+        info=info,
+        warnings=warnings,
+        structured_warnings=structured_warnings,
+        query_trace=query_trace,
+    )
+
+
+def _snapshot_symbol(symbol: str, metadata_timeout: float | None = None) -> Dict[str, Any]:
+    raw = _fetch_raw_metadata(symbol, metadata_timeout=metadata_timeout)
+    history_metadata = raw.history_metadata
+    fast_info = raw.fast_info
+    info = raw.info
 
     quote_type = (
         _normalize_text(info.get("quoteType"))
@@ -378,8 +465,15 @@ def _snapshot_symbol(symbol: str) -> Dict[str, Any]:
         "company_name": company_name,
         "company_key": _normalize_company_name(company_name),
         "source": calendar_info.get("source", "metadata"),
-        "raw_metadata": raw,
-        "metadata_present": bool(raw["history_metadata"] or raw["fast_info"] or raw["info"]),
+        "raw_metadata": {
+            "history_metadata": history_metadata,
+            "fast_info": fast_info,
+            "info": info,
+        },
+        "warnings": list(raw.warnings),
+        "structured_warnings": list(raw.structured_warnings),
+        "query_trace": list(raw.query_trace),
+        "metadata_present": bool(history_metadata or fast_info or info),
     }
 
 
@@ -403,14 +497,15 @@ def _candidate_suffixes(listing_preference: str, base_region: Optional[str] = No
     return []
 
 
-def _ordered_unique(values: List[str]) -> List[str]:
+def _ordered_unique(values: List[str], *, preserve_case: bool = False) -> List[str]:
     seen = set()
     ordered: List[str] = []
     for value in values:
-        normalized = str(value or "").strip().upper()
+        text = str(value or "").strip()
+        normalized = text.upper()
         if normalized and normalized not in seen:
             seen.add(normalized)
-            ordered.append(normalized)
+            ordered.append(text if preserve_case else normalized)
     return ordered
 
 
@@ -439,25 +534,33 @@ def _candidate_symbols(
     return [symbol for symbol in _ordered_unique(candidates) if symbol != requested]
 
 
-def _choose_preferred_snapshot(base_snapshot: Dict[str, Any], listing_preference: str) -> Tuple[Dict[str, Any], List[str], str]:
+def _choose_preferred_snapshot(
+    base_snapshot: Dict[str, Any],
+    listing_preference: str,
+    metadata_timeout: float | None = None,
+    candidate_limit: int | None = None,
+    snapshot_loader: Callable[[str], Dict[str, Any]] | None = None,
+) -> Tuple[Dict[str, Any], List[str], str, List[Dict[str, Any]]]:
     warnings: List[str] = []
     requested_symbol = str(base_snapshot["symbol"] or "").upper()
+    tested_snapshots: List[Dict[str, Any]] = []
+    load_snapshot = snapshot_loader or (lambda symbol: _snapshot_symbol(symbol, metadata_timeout=metadata_timeout))
 
     if listing_preference == "exact_symbol":
-        return base_snapshot, warnings, "high"
+        return base_snapshot, warnings, "high", tested_snapshots
 
     if base_snapshot["asset_type"] not in {"equity", "etf"}:
-        return base_snapshot, warnings, "high"
+        return base_snapshot, warnings, "high", tested_snapshots
 
     original_region = str(base_snapshot.get("region") or "UNKNOWN").upper()
     base_name = base_snapshot.get("company_key", "")
 
     if listing_preference == "prefer_europe" and original_region == "EUROPE":
-        return base_snapshot, warnings, "high"
+        return base_snapshot, warnings, "high", tested_snapshots
     if listing_preference == "prefer_usa" and original_region == "USA":
-        return base_snapshot, warnings, "high"
+        return base_snapshot, warnings, "high", tested_snapshots
     if listing_preference == "home_market" and original_region not in {"USA", "UNKNOWN"}:
-        return base_snapshot, warnings, "high"
+        return base_snapshot, warnings, "high", tested_snapshots
 
     target_region: Optional[str] = None
     if listing_preference == "prefer_europe":
@@ -474,12 +577,17 @@ def _choose_preferred_snapshot(base_snapshot: Dict[str, Any], listing_preference
     best_snapshot = base_snapshot
     best_score = exact_score
 
-    for candidate_symbol in _candidate_symbols(requested_symbol, listing_preference, base_region=original_region):
+    candidate_symbols = _candidate_symbols(requested_symbol, listing_preference, base_region=original_region)
+    if candidate_limit is not None:
+        candidate_symbols = candidate_symbols[: max(0, int(candidate_limit))]
+
+    for candidate_symbol in candidate_symbols:
         try:
-            snapshot = _snapshot_symbol(candidate_symbol)
+            snapshot = load_snapshot(candidate_symbol)
         except Exception as exc:
             logger.debug("Candidate lookup failed for %s: %s", candidate_symbol, exc)
             continue
+        tested_snapshots.append(snapshot)
 
         if not snapshot.get("metadata_present"):
             continue
@@ -517,7 +625,7 @@ def _choose_preferred_snapshot(base_snapshot: Dict[str, Any], listing_preference
         warnings.append(
             f"Se ha priorizado el listing {best_snapshot['symbol']} en lugar de {base_snapshot['symbol']} por la preferencia {listing_preference}."
         )
-        return best_snapshot, warnings, "medium"
+        return best_snapshot, warnings, "medium", tested_snapshots
 
     if listing_preference == "prefer_usa" and original_region != "USA":
         warnings.append(
@@ -527,37 +635,178 @@ def _choose_preferred_snapshot(base_snapshot: Dict[str, Any], listing_preference
         warnings.append(
             "No se encontró un listing alternativo con suficiente confianza; se mantiene el símbolo exacto solicitado."
         )
-    return base_snapshot, warnings, "medium"
+    return base_snapshot, warnings, "medium", tested_snapshots
+
+
+class ContextResolver:
+    def __init__(
+        self,
+        *,
+        metadata_timeout: float | None = None,
+        candidate_limit: int = 4,
+    ) -> None:
+        self.metadata_timeout = metadata_timeout
+        self.candidate_limit = max(1, int(candidate_limit))
+        self._snapshot_cache: Dict[str, Dict[str, Any]] = {}
+        self.metrics = {
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "metadata_queries": 0,
+            "resolutions": 0,
+        }
+
+    def _load_snapshot(self, symbol: str) -> Dict[str, Any]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        cached = self._snapshot_cache.get(normalized_symbol)
+        if cached is not None:
+            self.metrics["cache_hits"] += 1
+            snapshot = dict(cached)
+            snapshot["cache_hit"] = True
+            snapshot["query_trace"] = [
+                {**dict(item), "from_cache": True}
+                for item in snapshot.get("query_trace", [])
+                if isinstance(item, dict)
+            ]
+            return snapshot
+
+        snapshot = dict(_snapshot_symbol(normalized_symbol, metadata_timeout=self.metadata_timeout))
+        snapshot["cache_hit"] = False
+        self._snapshot_cache[normalized_symbol] = dict(snapshot)
+        self.metrics["cache_misses"] += 1
+        self.metrics["metadata_queries"] += len(snapshot.get("query_trace", []))
+        return snapshot
+
+    def resolve(
+        self,
+        symbol: str,
+        *,
+        market_override: Optional[str] = None,
+        listing_preference: str = "exact_symbol",
+    ) -> InstrumentContext:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            raise ValueError("Ticker symbol cannot be empty for context resolution.")
+
+        listing_preference = str(listing_preference or "exact_symbol").strip().lower()
+        if listing_preference not in {"exact_symbol", "home_market", "prefer_europe", "prefer_usa"}:
+            raise ValueError(f"Unsupported listing_preference: {listing_preference}")
+
+        base_snapshot = self._load_snapshot(normalized_symbol)
+        chosen_snapshot, preference_warnings, confidence, tested_snapshots = _choose_preferred_snapshot(
+            base_snapshot,
+            listing_preference,
+            metadata_timeout=self.metadata_timeout,
+            candidate_limit=self.candidate_limit,
+            snapshot_loader=self._load_snapshot,
+        )
+        attempted_snapshots = [base_snapshot, *tested_snapshots]
+
+        quote_type = str(chosen_snapshot.get("quote_type") or "UNKNOWN").upper()
+        asset_type = str(chosen_snapshot.get("asset_type") or _infer_asset_type(normalized_symbol, quote_type)).lower()
+        flags = _build_asset_flags(asset_type)
+
+        market = _normalize_text(market_override) or chosen_snapshot.get("market")
+        calendar = _normalize_text(market_override) or chosen_snapshot.get("calendar")
+        timezone = chosen_snapshot.get("timezone")
+        currency = chosen_snapshot.get("currency")
+        region = str(chosen_snapshot.get("region") or "UNKNOWN").upper()
+
+        warnings: List[str] = list(preference_warnings)
+        structured_warnings: List[Dict[str, Any]] = []
+        resolution_trace: List[Dict[str, Any]] = []
+        for rank, snapshot in enumerate(attempted_snapshots):
+            warnings.extend(list(snapshot.get("warnings", [])))
+            structured_warnings.extend(list(snapshot.get("structured_warnings", [])))
+            resolution_trace.append(
+                {
+                    "symbol": snapshot.get("symbol"),
+                    "candidate_rank": rank,
+                    "selected": str(snapshot.get("symbol") or "").upper()
+                    == str(chosen_snapshot.get("symbol") or "").upper(),
+                    "cache_hit": bool(snapshot.get("cache_hit")),
+                    "metadata_present": bool(snapshot.get("metadata_present")),
+                    "query_trace": list(snapshot.get("query_trace", [])),
+                }
+            )
+        inference_sources = [str(chosen_snapshot.get("source", "unknown")), f"listing_preference:{listing_preference}", "quote_type"]
+
+        if flags["calendar_validation_supported"] and not calendar:
+            warnings.append(
+                "No se pudo inferir un calendario de mercado exacto; la DQ usarÃ¡ validaciÃ³n sin calendario oficial."
+            )
+
+        if asset_type in {"equity", "etf"} and not timezone:
+            warnings.append("No se pudo inferir la zona horaria del mercado.")
+        if quote_type == "UNKNOWN":
+            warnings.append("quoteType no disponible; se asumiÃ³ perfil por heurÃ­stica.")
+
+        if not base_snapshot.get("metadata_present"):
+            confidence = "low"
+            warnings.append("No se obtuvo metadata de Yahoo para enriquecer el contexto del instrumento.")
+
+        raw_metadata = {
+            "requested": base_snapshot.get("raw_metadata", {}),
+            "preferred": chosen_snapshot.get("raw_metadata", {}),
+        }
+        self.metrics["resolutions"] += 1
+        resolver_metrics = {
+            "metadata_timeout": self.metadata_timeout,
+            "candidate_limit": self.candidate_limit,
+            "candidates_tested": len(tested_snapshots),
+            "cache_hits": self.metrics["cache_hits"],
+            "cache_misses": self.metrics["cache_misses"],
+            "metadata_queries": self.metrics["metadata_queries"],
+            "resolutions": self.metrics["resolutions"],
+        }
+
+        return InstrumentContext(
+            requested_symbol=normalized_symbol,
+            preferred_symbol=str(chosen_snapshot.get("symbol") or normalized_symbol),
+            resolved_symbol=str(chosen_snapshot.get("resolved_symbol") or normalized_symbol),
+            listing_preference=listing_preference,
+            quote_type=quote_type,
+            asset_type=asset_type,
+            asset_family=flags["asset_family"],
+            market=market,
+            calendar=calendar,
+            timezone=timezone,
+            currency=currency,
+            exchange_name=chosen_snapshot.get("exchange_name"),
+            exchange_code=chosen_snapshot.get("exchange_code"),
+            region=region,
+            is_24_7=bool(flags["is_24_7"]),
+            volume_expected=bool(flags["volume_expected"]),
+            corporate_actions_expected=bool(flags["corporate_actions_expected"]),
+            calendar_validation_supported=bool(flags["calendar_validation_supported"] and bool(calendar)),
+            dq_profile=str(flags["dq_profile"]),
+            confidence=confidence,
+            inference_sources=inference_sources,
+            warnings=_ordered_unique(warnings, preserve_case=True),
+            structured_warnings=structured_warnings,
+            resolution_trace=resolution_trace,
+            resolver_metrics=resolver_metrics,
+            raw_metadata=raw_metadata,
+        )
 
 
 def resolve_instrument_context(
     symbol: str,
     market_override: Optional[str] = None,
     listing_preference: str = "exact_symbol",
+    metadata_timeout: float | None = None,
+    resolver: ContextResolver | None = None,
+    candidate_limit: int = 4,
 ) -> InstrumentContext:
-    normalized_symbol = str(symbol or "").strip().upper()
-    if not normalized_symbol:
-        raise ValueError("Ticker symbol cannot be empty for context resolution.")
+    active_resolver = resolver or ContextResolver(
+        metadata_timeout=metadata_timeout,
+        candidate_limit=candidate_limit,
+    )
+    return active_resolver.resolve(
+        symbol,
+        market_override=market_override,
+        listing_preference=listing_preference,
+    )
 
-    listing_preference = str(listing_preference or "exact_symbol").strip().lower()
-    if listing_preference not in {"exact_symbol", "home_market", "prefer_europe", "prefer_usa"}:
-        raise ValueError(f"Unsupported listing_preference: {listing_preference}")
-
-    base_snapshot = _snapshot_symbol(normalized_symbol)
-    chosen_snapshot, preference_warnings, confidence = _choose_preferred_snapshot(base_snapshot, listing_preference)
-
-    quote_type = str(chosen_snapshot.get("quote_type") or "UNKNOWN").upper()
-    asset_type = str(chosen_snapshot.get("asset_type") or _infer_asset_type(normalized_symbol, quote_type)).lower()
-    flags = _build_asset_flags(asset_type)
-
-    market = _normalize_text(market_override) or chosen_snapshot.get("market")
-    calendar = _normalize_text(market_override) or chosen_snapshot.get("calendar")
-    timezone = chosen_snapshot.get("timezone")
-    currency = chosen_snapshot.get("currency")
-    region = str(chosen_snapshot.get("region") or "UNKNOWN").upper()
-
-    warnings: List[str] = list(preference_warnings)
-    inference_sources = [str(chosen_snapshot.get("source", "unknown")), f"listing_preference:{listing_preference}", "quote_type"]
 
     if flags["calendar_validation_supported"] and not calendar:
         warnings.append(
@@ -576,6 +825,14 @@ def resolve_instrument_context(
     raw_metadata = {
         "requested": base_snapshot.get("raw_metadata", {}),
         "preferred": chosen_snapshot.get("raw_metadata", {}),
+    }
+    resolver_metrics = {
+        "metadata_timeout": metadata_timeout,
+        "metadata_queries": len(base_snapshot.get("query_trace", [])) + len(chosen_snapshot.get("query_trace", []))
+        if chosen_snapshot is not base_snapshot
+        else len(base_snapshot.get("query_trace", [])),
+        "cache_hits": 0,
+        "cache_misses": 0,
     }
 
     return InstrumentContext(
@@ -601,6 +858,9 @@ def resolve_instrument_context(
         confidence=confidence,
         inference_sources=inference_sources,
         warnings=warnings,
+        structured_warnings=structured_warnings,
+        resolution_trace=resolution_trace,
+        resolver_metrics=resolver_metrics,
         raw_metadata=raw_metadata,
     )
 
@@ -627,6 +887,8 @@ def build_dq_context_payload(context: InstrumentContext) -> Dict[str, Any]:
         "dq_profile": context.dq_profile,
         "confidence": context.confidence,
         "warnings": list(context.warnings),
+        "structured_warnings": list(context.structured_warnings),
         "inference_sources": list(context.inference_sources),
+        "resolution_trace": list(context.resolution_trace),
+        "resolver_metrics": dict(context.resolver_metrics),
     }
-

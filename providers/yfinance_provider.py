@@ -158,6 +158,8 @@ class FetchMetadata:
     chunked: bool = False
     chunk_count: int = 0
     row_count: int = 0
+    semantic_flags: Dict[str, object] = field(default_factory=dict)
+    structured_warnings: List[Dict[str, object]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     attempts: List[DownloadAttempt] = field(default_factory=list)
 
@@ -306,14 +308,27 @@ def _clean_df(df: pd.DataFrame, preserve_local_dates: bool = False) -> pd.DataFr
     if out.empty:
         return out
 
+    semantic_warnings = _frame_semantic_warnings(out)
+    semantic_flags = _frame_semantic_flags(out)
     if "Close" not in out.columns and "Adj Close" in out.columns:
         out["Close"] = out["Adj Close"]
+        semantic_flags["close_source"] = "adj_close_fallback"
+        semantic_flags["close_derived_from_adj_close"] = True
+        semantic_warnings.append(
+            {
+                "code": "close_from_adj_close",
+                "severity": "warning",
+                "target_column": "Close",
+                "source_column": "Adj Close",
+                "message": "Yahoo omitted Close; Close was derived from Adj Close with explicit semantic trace.",
+            }
+        )
 
     required_ohlc = [column for column in ["Open", "High", "Low", "Close"] if column in out.columns]
     if required_ohlc:
         out = out.dropna(subset=required_ohlc)
 
-    return out
+    return _apply_semantic_attrs(out, warnings=semantic_warnings, flags=semantic_flags)
 
 
 def _calendarize_daily(df: pd.DataFrame, interval: str) -> pd.DataFrame:
@@ -424,6 +439,31 @@ def _empty_export_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=EXPORT_COLUMNS)
 
 
+_SEMANTIC_WARNING_ATTR = "ab3_structured_warnings"
+_SEMANTIC_FLAGS_ATTR = "ab3_semantic_flags"
+
+
+def _frame_semantic_warnings(df: pd.DataFrame) -> list[dict[str, object]]:
+    warnings = df.attrs.get(_SEMANTIC_WARNING_ATTR, [])
+    return [dict(item) for item in warnings if isinstance(item, dict)]
+
+
+def _frame_semantic_flags(df: pd.DataFrame) -> dict[str, object]:
+    flags = df.attrs.get(_SEMANTIC_FLAGS_ATTR, {})
+    return dict(flags) if isinstance(flags, dict) else {}
+
+
+def _apply_semantic_attrs(
+    df: pd.DataFrame,
+    *,
+    warnings: list[dict[str, object]],
+    flags: dict[str, object],
+) -> pd.DataFrame:
+    df.attrs[_SEMANTIC_WARNING_ATTR] = [dict(item) for item in warnings]
+    df.attrs[_SEMANTIC_FLAGS_ATTR] = dict(flags)
+    return df
+
+
 def _attach_metadata(df: pd.DataFrame, metadata: FetchMetadata) -> pd.DataFrame:
     out = df.copy()
     out.attrs["ab3_provenance"] = metadata.to_dict()
@@ -459,6 +499,7 @@ class YFinanceProvider:
         max_workers: int = DEFAULT_MAX_WORKERS,
         retries: int = DEFAULT_RETRIES,
         timeout: float = DEFAULT_TIMEOUT,
+        metadata_timeout: float | None = None,
         min_delay: float = DEFAULT_MIN_DELAY,
         max_intraday_lookback_days: int = DEFAULT_MAX_INTRADAY_LOOKBACK_DAYS,
         cache_dir: str | Path | None = None,
@@ -469,6 +510,7 @@ class YFinanceProvider:
             max_workers = params.get("max_workers", DEFAULT_MAX_WORKERS)
             retries = params.get("retries", DEFAULT_RETRIES)
             timeout = params.get("timeout", DEFAULT_TIMEOUT)
+            metadata_timeout = params.get("metadata_timeout")
             min_delay = params.get("min_delay", DEFAULT_MIN_DELAY)
             max_intraday_lookback_days = params.get(
                 "max_intraday_lookback_days",
@@ -480,6 +522,7 @@ class YFinanceProvider:
         self.max_workers = int(max_workers)
         self.retries = int(retries)
         self.timeout = float(timeout)
+        self.metadata_timeout = self.timeout if metadata_timeout is None else float(metadata_timeout)
         self.min_delay = float(min_delay)
         self.max_intraday_lookback_days = int(max_intraday_lookback_days)
         self.cache_dir = None if cache_dir in (None, "") else Path(cache_dir).expanduser().resolve()
@@ -491,6 +534,8 @@ class YFinanceProvider:
             raise ProviderConfigurationError("retries must be >= 1.")
         if self.timeout <= 0:
             raise ProviderConfigurationError("timeout must be > 0.")
+        if self.metadata_timeout <= 0:
+            raise ProviderConfigurationError("metadata_timeout must be > 0.")
         if self.min_delay < 0:
             raise ProviderConfigurationError("min_delay must be >= 0.")
         if self.max_intraday_lookback_days < 1:
@@ -592,6 +637,61 @@ class YFinanceProvider:
             )
         return _flatten_columns_if_needed(raw, symbol)
 
+    def _download_via_download_many(
+        self,
+        symbols: List[str],
+        start: Optional[pd.Timestamp],
+        end: Optional[pd.Timestamp],
+        interval: str,
+        auto_adjust: bool,
+        actions: bool,
+    ) -> pd.DataFrame:
+        tickers = " ".join(symbols)
+        try:
+            return yf.download(
+                tickers=tickers,
+                start=start,
+                end=end,
+                interval=interval,
+                auto_adjust=auto_adjust,
+                actions=actions,
+                progress=False,
+                threads=False,
+                keepna=True,
+            )
+        except TypeError:
+            return yf.download(
+                tickers=tickers,
+                start=start,
+                end=end,
+                interval=interval,
+                auto_adjust=auto_adjust,
+                actions=actions,
+                progress=False,
+                threads=False,
+            )
+
+    @staticmethod
+    def _extract_symbol_from_download(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+        if not hasattr(raw, "columns") or getattr(raw.columns, "nlevels", 1) <= 1:
+            return _flatten_columns_if_needed(raw, symbol)
+
+        for level in range(raw.columns.nlevels):
+            for candidate in raw.columns.get_level_values(level).unique():
+                if str(candidate).strip().upper() != symbol:
+                    continue
+                try:
+                    extracted = raw.xs(candidate, axis=1, level=level, drop_level=True)
+                except Exception:
+                    continue
+                if isinstance(extracted, pd.Series):
+                    extracted = extracted.to_frame()
+                return _flatten_columns_if_needed(extracted, symbol)
+
+        return pd.DataFrame()
+
     def _prepare_request_window(
         self,
         interval: str,
@@ -656,7 +756,10 @@ class YFinanceProvider:
         frame = _flatten_columns_if_needed(raw, symbol)
         frame = _clean_df(frame, preserve_local_dates=preserve_local_dates)
         frame = _calendarize_daily(frame, interval)
+        semantic_warnings = _frame_semantic_warnings(frame)
+        semantic_flags = _frame_semantic_flags(frame)
         frame = _select_export_columns(frame)
+        frame = _apply_semantic_attrs(frame, warnings=semantic_warnings, flags=semantic_flags)
 
         if frame.empty:
             return frame
@@ -665,7 +768,7 @@ class YFinanceProvider:
             frame = frame.drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
 
         frame = frame.sort_values("date").reset_index(drop=True)
-        return frame
+        return _apply_semantic_attrs(frame, warnings=semantic_warnings, flags=semantic_flags)
 
     def _merge_chunk_frames(
         self,
@@ -674,6 +777,12 @@ class YFinanceProvider:
     ) -> pd.DataFrame:
         if not frames:
             return _empty_export_frame()
+
+        semantic_warnings: list[dict[str, object]] = []
+        semantic_flags: dict[str, object] = {}
+        for frame in frames:
+            semantic_warnings.extend(_frame_semantic_warnings(frame))
+            semantic_flags.update(_frame_semantic_flags(frame))
 
         merged = pd.concat(frames, axis=0, ignore_index=True)
         merged["date"] = pd.to_datetime(merged["date"], errors="coerce")
@@ -704,7 +813,8 @@ class YFinanceProvider:
                 .reset_index(drop=True)
             )
 
-        return merged[EXPORT_COLUMNS].copy()
+        merged = merged[EXPORT_COLUMNS].copy()
+        return _apply_semantic_attrs(merged, warnings=semantic_warnings, flags=semantic_flags)
 
     def _download_window(
         self,
@@ -873,6 +983,13 @@ class YFinanceProvider:
                     metadata.chunked = chunked
                     metadata.chunk_count = chunk_count
                     metadata.row_count = int(len(frame))
+                    metadata.semantic_flags.update(_frame_semantic_flags(frame))
+                    metadata.structured_warnings.extend(_frame_semantic_warnings(frame))
+                    metadata.warnings.extend(
+                        warning["message"]
+                        for warning in metadata.structured_warnings
+                        if isinstance(warning, dict) and str(warning.get("message", "")).strip()
+                    )
                     if "adj_close" in frame.columns and pd.to_numeric(frame["adj_close"], errors="coerce").isna().all():
                         metadata.warnings.append(
                             "Provider returned no usable adj_close values; Qlib factor policy may need controlled fallback handling."
@@ -962,6 +1079,152 @@ class YFinanceProvider:
         frame = _attach_metadata(_empty_export_frame(), metadata)
         return FetchResult(symbol=requested_symbol, data=frame, metadata=metadata)
 
+    def _build_fetch_result_from_frame(
+        self,
+        *,
+        symbol: str,
+        frame: pd.DataFrame,
+        requested_start: Optional[pd.Timestamp],
+        requested_end: Optional[pd.Timestamp],
+        requested_interval: str,
+        resolved_interval: str,
+        effective_start: Optional[pd.Timestamp],
+        effective_end: Optional[pd.Timestamp],
+        auto_adjust: bool,
+        actions: bool,
+        warnings: List[str],
+        attempt_number: int,
+        duration_seconds: float,
+        backend: str,
+    ) -> FetchResult:
+        metadata = self._build_metadata(
+            requested_symbol=symbol,
+            resolved_symbol=symbol,
+            requested_interval=requested_interval,
+            resolved_interval=resolved_interval,
+            requested_start=requested_start,
+            requested_end=requested_end,
+            effective_start=effective_start,
+            effective_end=effective_end,
+            auto_adjust=auto_adjust,
+            actions=actions,
+            warnings=warnings,
+        )
+        metadata.attempts.append(
+            DownloadAttempt(
+                attempt_number=attempt_number,
+                backend=backend,
+                interval=resolved_interval,
+                start=_ts_to_iso(effective_start),
+                end=_ts_to_iso(effective_end),
+                duration_seconds=round(duration_seconds, 6),
+                success=not frame.empty,
+                rows=int(len(frame)),
+                error=None if not frame.empty else "empty dataframe",
+            )
+        )
+        if frame.empty:
+            return FetchResult(symbol=symbol, data=_attach_metadata(_empty_export_frame(), metadata), metadata=metadata)
+
+        actual_start, actual_end = _extract_actual_bounds(frame)
+        metadata.actual_start = _ts_to_iso(actual_start)
+        metadata.actual_end = _ts_to_iso(actual_end)
+        metadata.backend_used = backend
+        metadata.chunked = False
+        metadata.chunk_count = 1
+        metadata.row_count = int(len(frame))
+        metadata.semantic_flags.update(_frame_semantic_flags(frame))
+        metadata.structured_warnings.extend(_frame_semantic_warnings(frame))
+        metadata.warnings.extend(
+            warning["message"]
+            for warning in metadata.structured_warnings
+            if isinstance(warning, dict) and str(warning.get("message", "")).strip()
+        )
+        if "adj_close" in frame.columns and pd.to_numeric(frame["adj_close"], errors="coerce").isna().all():
+            metadata.warnings.append(
+                "Provider returned no usable adj_close values; Qlib factor policy may need controlled fallback handling."
+            )
+        return FetchResult(symbol=symbol, data=_attach_metadata(frame, metadata), metadata=metadata)
+
+    def _fetch_many_download_results(
+        self,
+        *,
+        symbols: List[str],
+        start: Optional[Union[str, pd.Timestamp]],
+        end: Optional[Union[str, pd.Timestamp]],
+        interval: str,
+        auto_adjust: bool,
+        actions: bool,
+    ) -> tuple[Dict[str, FetchResult], List[str]]:
+        requested_start = _to_naive_utc(start)
+        requested_end = _to_naive_utc(end)
+        requested_interval, resolved_interval = _normalize_interval(interval)
+        effective_start, effective_end, warnings = self._prepare_request_window(
+            resolved_interval,
+            requested_start,
+            requested_end,
+        )
+
+        if is_intraday_interval(resolved_interval):
+            return {}, list(symbols)
+
+        if self.min_delay > 0:
+            time.sleep(self.min_delay * random.uniform(0.5, 1.5))
+
+        last_error: Exception | None = None
+        for attempt_number in range(1, self.retries + 1):
+            started = time.perf_counter()
+            try:
+                raw = self._download_via_download_many(
+                    symbols,
+                    effective_start,
+                    effective_end,
+                    resolved_interval,
+                    auto_adjust,
+                    actions,
+                )
+                duration = time.perf_counter() - started
+                batch_results: Dict[str, FetchResult] = {}
+                missing_symbols: List[str] = []
+                for symbol in symbols:
+                    extracted = self._extract_symbol_from_download(raw, symbol)
+                    frame = self._normalize_raw_history(extracted, symbol, resolved_interval)
+                    fetch_result = self._build_fetch_result_from_frame(
+                        symbol=symbol,
+                        frame=frame,
+                        requested_start=requested_start,
+                        requested_end=requested_end,
+                        requested_interval=requested_interval,
+                        resolved_interval=resolved_interval,
+                        effective_start=effective_start,
+                        effective_end=effective_end,
+                        auto_adjust=auto_adjust,
+                        actions=actions,
+                        warnings=list(warnings),
+                        attempt_number=attempt_number,
+                        duration_seconds=duration,
+                        backend="download_many",
+                    )
+                    if frame.empty:
+                        missing_symbols.append(symbol)
+                    else:
+                        batch_results[symbol] = fetch_result
+                if batch_results or missing_symbols:
+                    return batch_results, missing_symbols
+                last_error = EmptyDatasetError(
+                    f"Yahoo returned no usable rows for batch request {symbols!r} at interval={resolved_interval}."
+                )
+            except Exception as exc:
+                last_error = exc
+
+            if attempt_number < self.retries:
+                sleep_seconds = (2 ** (attempt_number - 1)) * 0.8 + random.random() * 0.4
+                time.sleep(sleep_seconds)
+
+        if last_error is not None:
+            logger.warning("Block download failed for %s: %s", symbols, last_error)
+        return {}, list(symbols)
+
     def get_history_bundle(
         self,
         symbols: Union[str, Iterable[str]],
@@ -992,7 +1255,17 @@ class YFinanceProvider:
         if not normalized_symbols:
             return {}
 
-        results: Dict[str, FetchResult] = {}
+        results, pending_symbols = self._fetch_many_download_results(
+            symbols=normalized_symbols,
+            start=start,
+            end=end,
+            interval=interval,
+            auto_adjust=auto_adjust,
+            actions=actions,
+        )
+        if not pending_symbols:
+            return {symbol: results[symbol] for symbol in normalized_symbols}
+
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
                 executor.submit(
@@ -1004,7 +1277,7 @@ class YFinanceProvider:
                     auto_adjust,
                     actions,
                 ): symbol
-                for symbol in normalized_symbols
+                for symbol in pending_symbols
             }
 
             for future in as_completed(futures):
@@ -1023,7 +1296,7 @@ class YFinanceProvider:
                         error=exc,
                     )
 
-        return results
+        return {symbol: results[symbol] for symbol in normalized_symbols}
 
     def get_history(
         self,
@@ -1081,6 +1354,7 @@ class YFinanceProvider:
             "max_workers": self.max_workers,
             "retries": self.retries,
             "timeout": self.timeout,
+            "metadata_timeout": self.metadata_timeout,
             "min_delay": self.min_delay,
             "max_intraday_lookback_days": self.max_intraday_lookback_days,
             "cache_dir": None if self.cache_dir is None else str(self.cache_dir),
