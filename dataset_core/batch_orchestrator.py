@@ -9,7 +9,7 @@ from dataset_core.logging_runtime import bind_runtime_logger, close_run_logger, 
 from dataset_core.manifest_service import build_batch_manifest, render_batch_manifest_text
 from dataset_core.reference_adapters import CSVReferenceAdapter, ManualEventAdapter
 from dataset_core.result_models import BatchResult
-from dataset_core.serialization import write_json, write_text
+from dataset_core.serialization import cleanup_orphan_temp_files, write_json, write_text
 from dataset_core.validation_external import ExternalValidationService
 
 
@@ -88,4 +88,16 @@ class BatchOrchestrator:
             bind_runtime_logger(run_logger_handle.logger, stage="batch_failure").exception("Batch export failed.")
             raise
         finally:
+            try:
+                removed_tmp_files = cleanup_orphan_temp_files(run_dirs.workspace_root)
+                if removed_tmp_files:
+                    bind_runtime_logger(run_logger_handle.logger, stage="tmp_cleanup").info(
+                        "Removed %s orphan temporary file(s).",
+                        len(removed_tmp_files),
+                    )
+            except Exception:
+                bind_runtime_logger(run_logger_handle.logger, stage="tmp_cleanup").warning(
+                    "Failed to cleanup orphan temporary files.",
+                    exc_info=True,
+                )
             close_run_logger(run_dirs.run_id)

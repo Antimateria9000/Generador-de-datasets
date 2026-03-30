@@ -28,13 +28,22 @@ def test_gitignore_blocks_workspace_and_local_garbage():
     repo_root = Path(__file__).resolve().parents[2]
     content = (repo_root / ".gitignore").read_text(encoding="utf-8")
 
-    for required in (".venv/", "workspace/", "Dataset/", "Datasets/", "Versiones antiguas/", "**/.git/"):
+    for required in (
+        ".venv/",
+        "workspace/",
+        "verification_output/",
+        "*.tmp",
+        "Dataset/",
+        "Datasets/",
+        "Versiones antiguas/",
+        "**/.git/",
+    ):
         assert required in content
 
 
 def test_scrub_personal_data_detects_local_paths(tmp_path, monkeypatch):
     repo_file = tmp_path / "sample.txt"
-    local_path = "C:" + "\\\\Users\\\\alice\\\\secret.txt"
+    local_path = "C:\\Users\\alice\\secret.txt"
     repo_file.write_text(f"source={local_path}\n", encoding="utf-8")
     monkeypatch.setattr(scrub_personal_data, "REPO_ROOT", tmp_path)
 
@@ -42,6 +51,16 @@ def test_scrub_personal_data_detects_local_paths(tmp_path, monkeypatch):
 
     assert any(item["kind"] == "absolute_user_path" for item in findings)
     assert any(item["kind"] == "personal_token" for item in findings)
+
+
+def test_scrub_personal_data_detects_unc_paths(tmp_path, monkeypatch):
+    repo_file = tmp_path / "sample.txt"
+    repo_file.write_text(r"source=\\corp-fs\home\alice\secret.txt" + "\n", encoding="utf-8")
+    monkeypatch.setattr(scrub_personal_data, "REPO_ROOT", tmp_path)
+
+    findings = scrub_personal_data._scan_file(repo_file, {"alice"})
+
+    assert any(item["kind"] == "absolute_user_path" for item in findings)
 
 
 def test_clean_workspace_script_preserves_directory_tree(tmp_path, monkeypatch):

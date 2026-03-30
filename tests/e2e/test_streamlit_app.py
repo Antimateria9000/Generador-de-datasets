@@ -63,6 +63,7 @@ def test_streamlit_helper_builds_request_for_qlib(monkeypatch, tmp_path):
     assert request.tickers == ["MSFT"]
     assert request.requires_factor is True
     assert request.qlib_sanitization is True
+    assert request.extras == ["factor"]
 
 
 def test_streamlit_exact_range_helper_uses_shared_end_exclusive_policy():

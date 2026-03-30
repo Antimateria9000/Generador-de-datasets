@@ -16,7 +16,9 @@ class AcquisitionService:
         auto_adjust: bool,
         actions: bool,
     ) -> FetchResult:
-        provider = self.provider_factory(**request.provider.to_kwargs())
+        provider_kwargs = request.provider.to_kwargs()
+        provider_kwargs.setdefault("cache_dir", request.output_dir / "cache" / "yfinance")
+        provider = self.provider_factory(**provider_kwargs)
         result = provider.get_history_bundle(
             symbols=symbol,
             start=request.time_range.start,

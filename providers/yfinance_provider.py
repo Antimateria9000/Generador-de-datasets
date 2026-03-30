@@ -461,6 +461,7 @@ class YFinanceProvider:
         timeout: float = DEFAULT_TIMEOUT,
         min_delay: float = DEFAULT_MIN_DELAY,
         max_intraday_lookback_days: int = DEFAULT_MAX_INTRADAY_LOOKBACK_DAYS,
+        cache_dir: str | Path | None = None,
         allow_partial_intraday: bool = False,
     ) -> None:
         if isinstance(max_workers, dict):
@@ -473,6 +474,7 @@ class YFinanceProvider:
                 "max_intraday_lookback_days",
                 DEFAULT_MAX_INTRADAY_LOOKBACK_DAYS,
             )
+            cache_dir = params.get("cache_dir")
             allow_partial_intraday = params.get("allow_partial_intraday", False)
 
         self.max_workers = int(max_workers)
@@ -480,6 +482,7 @@ class YFinanceProvider:
         self.timeout = float(timeout)
         self.min_delay = float(min_delay)
         self.max_intraday_lookback_days = int(max_intraday_lookback_days)
+        self.cache_dir = None if cache_dir in (None, "") else Path(cache_dir).expanduser().resolve()
         self.allow_partial_intraday = bool(allow_partial_intraday)
 
         if self.max_workers < 1:
@@ -493,25 +496,29 @@ class YFinanceProvider:
         if self.max_intraday_lookback_days < 1:
             raise ProviderConfigurationError("max_intraday_lookback_days must be >= 1.")
 
-        self._configure_project_cache()
+        self._configure_project_cache(self.cache_dir)
 
     @staticmethod
-    def _configure_project_cache() -> None:
+    def _configure_project_cache(cache_dir: Path | None = None) -> None:
         project_root = Path(__file__).resolve().parents[1]
-        cache_dir = project_root / "workspace" / "cache" / "yfinance"
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        resolved_cache_dir = (
+            project_root / "workspace" / "cache" / "yfinance"
+            if cache_dir is None
+            else Path(cache_dir).expanduser().resolve()
+        )
+        resolved_cache_dir.mkdir(parents=True, exist_ok=True)
         try:
-            probe_path = cache_dir / "probe.db"
+            probe_path = resolved_cache_dir / "probe.db"
             connection = sqlite3.connect(probe_path)
             connection.execute("create table if not exists probe(x int)")
             connection.commit()
             connection.close()
             probe_path.unlink(missing_ok=True)
-            yf.set_tz_cache_location(str(cache_dir))
+            yf.set_tz_cache_location(str(resolved_cache_dir))
         except Exception as exc:
             logger.warning(
                 "yfinance sqlite cache is not available at %s; disabling yfinance caches. Reason: %s",
-                cache_dir,
+                resolved_cache_dir,
                 exc,
             )
             try:
@@ -1076,6 +1083,7 @@ class YFinanceProvider:
             "timeout": self.timeout,
             "min_delay": self.min_delay,
             "max_intraday_lookback_days": self.max_intraday_lookback_days,
+            "cache_dir": None if self.cache_dir is None else str(self.cache_dir),
             "allow_partial_intraday": self.allow_partial_intraday,
             "export_columns": list(EXPORT_COLUMNS),
         }

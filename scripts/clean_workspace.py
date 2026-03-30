@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.all and args.confirm_all != "DELETE":
         raise SystemExit("--all requires --confirm-all DELETE")
+    if args.older_than_days is not None and int(args.older_than_days) < 0:
+        raise SystemExit("--older-than-days must be >= 0")
 
     selected_runs = select_runs_for_cleanup(
         workspace["workspace_root"],

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import date
+import re
+from datetime import date, datetime
 
 import pandas as pd
 
 INTRADAY_INTERVALS = frozenset({"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"})
 DAILY_LIKE_INTERVALS = frozenset({"1d", "5d", "1wk", "1mo", "3mo"})
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MIDNIGHT_TEXT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]00:00:00(?:\.0+)?$")
 
 
 class DateWindowError(ValueError):
@@ -31,12 +34,43 @@ def is_daily_like_interval(interval: str) -> bool:
     return str(interval or "").strip().lower() in DAILY_LIKE_INTERVALS
 
 
-def build_ui_exact_end_exclusive(
-    end_date: date,
+def _parse_user_timestamp(raw: object, field_name: str) -> pd.Timestamp:
+    value = pd.to_datetime(raw, utc=True, errors="coerce")
+    if pd.isna(value):
+        raise DateWindowError(f"Invalid {field_name}: {raw!r}")
+    return pd.Timestamp(value).tz_convert(None)
+
+
+def _looks_like_calendar_input(raw: object) -> bool:
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return True
+
+    text = str(raw or "").strip()
+    if not text:
+        return False
+    return bool(_DATE_ONLY_RE.fullmatch(text) or _MIDNIGHT_TEXT_RE.fullmatch(text))
+
+
+def normalize_user_start(
+    start: object,
+    interval: str,
+) -> pd.Timestamp:
+    start_ts = _parse_user_timestamp(start, "start")
+    if is_daily_like_interval(interval) and _looks_like_calendar_input(start):
+        return start_ts.normalize()
+    return start_ts
+
+
+def normalize_user_end_exclusive(
+    end: object,
     interval: str,
     now_utc: pd.Timestamp | None = None,
 ) -> pd.Timestamp:
-    selected_day = pd.Timestamp(end_date).normalize()
+    end_ts = _parse_user_timestamp(end, "end")
+    if not _looks_like_calendar_input(end):
+        return end_ts
+
+    selected_day = end_ts.normalize()
     exclusive_end = selected_day + pd.Timedelta(days=1)
     now = _normalize_utc_naive(now_utc)
 
@@ -56,6 +90,68 @@ def build_ui_exact_end_exclusive(
     if validated_end is None:
         raise DateWindowError("A valid exclusive end timestamp could not be derived from the selected date.")
     return validated_end
+
+
+def resolve_temporal_bounds(
+    *,
+    years: int | None,
+    start: object | None,
+    end: object | None,
+    interval: str,
+    now_utc: pd.Timestamp | None = None,
+) -> tuple[str, pd.Timestamp, pd.Timestamp, int | None, bool]:
+    has_years = years is not None
+    has_exact = bool(start or end)
+
+    if has_years and has_exact:
+        raise DateWindowError("Use either rolling years or an exact date range, not both.")
+    if not has_years and not has_exact:
+        raise DateWindowError("You must provide either --years or --start/--end.")
+    if has_exact and (not start or not end):
+        raise DateWindowError("Exact range mode requires both --start and --end.")
+
+    normalized_interval = str(interval or "1d").strip().lower()
+    now = _normalize_utc_naive(now_utc)
+
+    if has_years:
+        rolling_years = int(years)
+        if rolling_years <= 0:
+            raise DateWindowError("The number of years must be greater than zero.")
+
+        if is_daily_like_interval(normalized_interval):
+            current_day = now.normalize()
+            range_start = current_day - pd.DateOffset(years=rolling_years)
+            range_end = next_midnight_utc(now)
+        else:
+            range_end = now
+            range_start = range_end - pd.DateOffset(years=rolling_years)
+
+        return "rolling_years", range_start, range_end, rolling_years, False
+
+    range_start = normalize_user_start(start, normalized_interval)
+    range_end = normalize_user_end_exclusive(end, normalized_interval, now_utc=now)
+    range_start, range_end, _ = validate_provider_window(
+        interval=normalized_interval,
+        start=range_start,
+        end=range_end,
+        now_utc=now,
+    )
+    if range_start is None or range_end is None or range_start >= range_end:
+        raise DateWindowError("Invalid exact range: start must be earlier than end.")
+
+    return "exact_dates", range_start, range_end, None, True
+
+
+def build_ui_exact_end_exclusive(
+    end_date: date,
+    interval: str,
+    now_utc: pd.Timestamp | None = None,
+) -> pd.Timestamp:
+    return normalize_user_end_exclusive(
+        end=end_date,
+        interval=interval,
+        now_utc=now_utc,
+    )
 
 
 def validate_provider_window(

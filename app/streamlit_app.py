@@ -14,7 +14,6 @@ from dataset_core import (
     TemporalRange,
     parse_tickers_text,
 )
-from dataset_core.date_windows import build_ui_exact_end_exclusive
 from dataset_core.presets import resolve_preset
 from dataset_core.settings import DEFAULT_OUTPUT_ROOT, DQ_MODES, LISTING_PREFERENCES, PRESET_NAMES, SUPPORTED_INTERVALS
 from dataset_core.workspace_inventory import filter_workspace_runs, list_workspace_runs
@@ -83,7 +82,12 @@ def _build_request_from_form(
             raise ValueError("Debes seleccionar fecha de inicio y fin.")
         time_range = _build_exact_temporal_range(start_date=start_date, end_date=end_date, interval=interval)
     else:
-        time_range = TemporalRange.from_inputs(years=int(years), start=None, end=None)
+        time_range = TemporalRange.from_inputs(
+            years=int(years),
+            start=None,
+            end=None,
+            interval=interval,
+        )
 
     return DatasetRequest(
         tickers=tickers,
@@ -114,15 +118,12 @@ def _build_exact_temporal_range(
     interval: str,
     now_utc: pd.Timestamp | None = None,
 ) -> TemporalRange:
-    end_exclusive = build_ui_exact_end_exclusive(
-        end_date=end_date,
-        interval=interval,
-        now_utc=now_utc,
-    )
     return TemporalRange.from_inputs(
         years=None,
-        start=start_date.isoformat(),
-        end=end_exclusive.isoformat(),
+        start=start_date,
+        end=end_date,
+        interval=interval,
+        now_utc=now_utc,
     )
 
 
@@ -141,7 +142,7 @@ def _render_column_block(preset: str, qlib_sanitization: bool) -> None:
 
     st.caption("`volume` forma parte del contrato OHLCV y queda siempre activo.")
 
-    st.checkbox("adj_close", key="extra_adj_close")
+    st.checkbox("adj_close", key="extra_adj_close", disabled=preset == "qlib")
     st.checkbox("dividends", key="extra_dividends", disabled=preset == "qlib")
     st.checkbox("stock_splits", key="extra_stock_splits", disabled=preset == "qlib")
     st.checkbox("factor", key="extra_factor", disabled=preset == "qlib")
@@ -151,11 +152,13 @@ def _render_column_block(preset: str, qlib_sanitization: bool) -> None:
         for extra in ("adj_close", "dividends", "stock_splits", "factor")
         if st.session_state.get(f"extra_{extra}", False)
     ]
+    if preset == "qlib":
+        selected_extras = ["factor"]
     resolved_general = resolve_preset(preset, selected_extras)
     st.caption(f"Salida principal: `{', '.join(resolved_general.output_columns)}`")
 
     if qlib_sanitization and preset != "qlib":
-        resolved_qlib = resolve_preset("qlib", selected_extras)
+        resolved_qlib = resolve_preset("qlib", [])
         st.caption(
             "El artefacto Qlib paralelo usara solo columnas compatibles con Qlib. "
             "Las columnas extra incompatibles se conservaran en la salida general."
@@ -290,8 +293,8 @@ def _render_workspace_panel(workspace_root_value: str) -> None:
             interval=interval_filter or None,
             status=status_filter or None,
             older_than_days=None if int(age_filter) <= 0 else int(age_filter),
-            created_from=None if created_from is None else pd.Timestamp(created_from).isoformat(),
-            created_to=None if created_to is None else pd.Timestamp(created_to).isoformat(),
+            created_from=created_from,
+            created_to=created_to,
         )
 
         rows = [record.to_dict() for record in filtered]

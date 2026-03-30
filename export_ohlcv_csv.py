@@ -113,7 +113,12 @@ def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
     if args.mode == "qlib" and args.filename:
         raise RequestContractError("Custom filenames are not supported in qlib mode.")
 
-    time_range = TemporalRange.from_inputs(years=args.years, start=args.start, end=args.end)
+    time_range = TemporalRange.from_inputs(
+        years=args.years,
+        start=args.start,
+        end=args.end,
+        interval=args.interval,
+    )
     provider = ProviderConfig(
         max_workers=args.provider_max_workers,
         retries=args.provider_retries,
@@ -211,7 +216,12 @@ def export_one_ticker(
 ) -> Path:
     request = DatasetRequest(
         tickers=[ticker],
-        time_range=TemporalRange.from_inputs(years=years, start=start, end=end),
+        time_range=TemporalRange.from_inputs(
+            years=years,
+            start=start,
+            end=end,
+            interval=interval,
+        ),
         output_dir=Path(outdir).expanduser().resolve(),
         interval=interval,
         mode=mode,

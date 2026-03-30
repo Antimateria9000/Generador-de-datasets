@@ -316,8 +316,20 @@ def validate_qlib_frame(
 
     allowed_optional = set(QLIB_OPTIONAL_COLUMNS)
     unexpected_extra_columns = [column for column in columns if column not in required and column not in allowed_optional]
-    if not reasons and unexpected_extra_columns:
-        warnings.append("Qlib export contains additional diagnostic columns beyond the minimum contract.")
+    if unexpected_extra_columns:
+        reasons.append(
+            "Qlib export contains forbidden columns outside the closed contract: "
+            + ", ".join(unexpected_extra_columns)
+            + "."
+        )
+    _record_check(
+        checks,
+        "closed_contract_columns",
+        passed=not unexpected_extra_columns,
+        severity="blocking" if unexpected_extra_columns else "info",
+        message="Validated that the closed Qlib contract does not emit forbidden columns.",
+        unexpected_columns=unexpected_extra_columns,
+    )
 
     return QlibContractResult(
         compatible=not reasons,

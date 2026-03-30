@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from dataset_core.contracts import DatasetRequest, TemporalRange
+import pytest
+
+from dataset_core.contracts import DatasetRequest, RequestContractError, TemporalRange
 from dataset_core.batch_orchestrator import BatchOrchestrator
 from dataset_core.export_service import DatasetExportService
 from dataset_core.workspace_cleanup import cleanup_runs, select_runs_for_cleanup
@@ -53,34 +55,20 @@ def test_parallel_qlib_sanitization_writes_general_and_qlib_outputs(tmp_path, pa
     assert result.artifacts.csv != result.artifacts.qlib_csv
     assert result.qlib_compatible is True
     assert qlib_report["qlib_compatible"] is True
-    assert result.status == "warning"
+    assert result.status == "success"
     assert result.artifacts.meta.exists()
 
 
-def test_qlib_preset_is_closed_in_backend_even_with_incompatible_extras(tmp_path, patch_market_context):
-    export_service = DatasetExportService(
-        acquisition_service=DummyAcquisitionService({"NVDA": make_nvda_like_split_frame()})
-    )
-    orchestrator = BatchOrchestrator(export_service=export_service)
-    request = DatasetRequest(
-        tickers=["NVDA"],
-        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
-        output_dir=tmp_path,
-        mode="qlib",
-        extras=["dividends", "stock_splits", "adj_close"],
-        qlib_sanitization=False,
-        dq_mode="off",
-    )
-
-    batch_result = orchestrator.run(request)
-    result = batch_result.results[0]
-    frame = json.loads(result.artifacts.meta.read_text(encoding="utf-8"))
-
-    assert request.qlib_sanitization is True
-    assert request.extras == ["factor", "adj_close"]
-    assert result.status == "success"
-    assert frame["datasets"]["qlib"]["contract"] == "qlib_strict"
-    assert frame["datasets"]["general"]["contract"] == "canonical_general"
+def test_qlib_preset_rejects_incompatible_extras_in_backend():
+    with pytest.raises(RequestContractError, match="Preset qlib is closed"):
+        DatasetRequest(
+            tickers=["NVDA"],
+            time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+            mode="qlib",
+            extras=["dividends", "stock_splits", "adj_close"],
+            qlib_sanitization=False,
+            dq_mode="off",
+        )
 
 
 def test_workspace_inventory_and_cleanup_support_selective_runs(tmp_path, patch_market_context):
@@ -123,3 +111,28 @@ def test_workspace_inventory_and_cleanup_support_selective_runs(tmp_path, patch_
     assert first.run_id in result.run_ids
     assert not (tmp_path / "runs" / first.run_id).exists()
     assert (tmp_path / "runs" / second.run_id).exists()
+
+
+def test_workspace_inventory_reconstructs_runs_without_batch_manifest(tmp_path, patch_market_context):
+    export_service = DatasetExportService(
+        acquisition_service=DummyAcquisitionService({"MSFT": make_provider_frame("MSFT")})
+    )
+    batch_result = BatchOrchestrator(export_service=export_service).run(
+        DatasetRequest(
+            tickers=["MSFT"],
+            time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+            output_dir=tmp_path,
+            dq_mode="off",
+        )
+    )
+    batch_result.manifest_json_path.unlink()
+
+    inventory = list_workspace_runs(tmp_path)
+    record = next(item for item in inventory if item.run_id == batch_result.run_id)
+
+    assert record.preset == "base"
+    assert record.interval == "1d"
+    assert record.tickers == ["MSFT"]
+    assert record.overall_status == "success"
+    assert record.orphaned is False
+    assert record.metadata_source == "reconstructed"

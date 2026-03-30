@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from dataset_core.logging_runtime import close_run_logger
+from dataset_core.serialization import iter_orphan_temp_files
 from dataset_core.settings import ensure_workspace_tree
 from dataset_core.workspace_inventory import WorkspaceRunRecord, filter_workspace_runs, list_workspace_runs
 
@@ -91,6 +92,15 @@ def _remove_tree(path: Path) -> None:
     _rmdir_with_retries(path)
 
 
+def _validate_older_than_days(value: int | None) -> int | None:
+    if value is None:
+        return None
+    normalized = int(value)
+    if normalized < 0:
+        raise ValueError("older_than_days must be >= 0.")
+    return normalized
+
+
 @dataclass(frozen=True)
 class CleanupResult:
     run_ids: list[str] = field(default_factory=list)
@@ -108,6 +118,7 @@ def select_runs_for_cleanup(
     orphans: bool = False,
     all_runs: bool = False,
 ) -> list[WorkspaceRunRecord]:
+    older_than_days = _validate_older_than_days(older_than_days)
     inventory = list_workspace_runs(workspace_root)
     selected: dict[str, WorkspaceRunRecord] = {}
 
@@ -161,6 +172,13 @@ def cleanup_runs(
                 _remove_tree(path)
             else:
                 _unlink_with_retries(path)
+
+    for temp_path in iter_orphan_temp_files(root):
+        _assert_within_workspace(root, temp_path)
+        bytes_reclaimed += _path_size(temp_path)
+        removed_paths.append(str(temp_path.resolve()))
+        if not dry_run:
+            _unlink_with_retries(temp_path)
 
     return CleanupResult(
         run_ids=[str(item).strip() for item in run_ids if str(item).strip()],

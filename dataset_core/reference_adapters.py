@@ -15,6 +15,18 @@ class ReferenceAdapter(Protocol):
         """Load a reference frame for the requested symbol and range."""
 
 
+def normalize_reference_timestamp(value: object) -> pd.Timestamp | None:
+    timestamp = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(timestamp):
+        return None
+    return pd.Timestamp(timestamp).tz_convert("UTC").tz_localize(None)
+
+
+def _normalize_reference_dates(values: pd.Series) -> pd.Series:
+    normalized = pd.to_datetime(values, utc=True, errors="coerce")
+    return normalized.dt.tz_convert("UTC").dt.tz_localize(None)
+
+
 def normalize_reference_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if frame is None or frame.empty:
         return pd.DataFrame()
@@ -31,9 +43,31 @@ def normalize_reference_frame(frame: pd.DataFrame) -> pd.DataFrame:
         first_column = str(working.columns[0])
         working = working.rename(columns={first_column: "date"})
 
-    working["date"] = pd.to_datetime(working["date"], errors="coerce")
+    working["date"] = _normalize_reference_dates(working["date"])
     working = working.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
     return working
+
+
+def filter_reference_frame(
+    frame: pd.DataFrame,
+    *,
+    start: object | None,
+    end: object | None,
+) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+
+    normalized = normalize_reference_frame(frame)
+    if normalized.empty:
+        return normalized
+
+    start_ts = normalize_reference_timestamp(start) if start else None
+    end_ts = normalize_reference_timestamp(end) if end else None
+    if start_ts is not None:
+        normalized = normalized[normalized["date"] >= start_ts]
+    if end_ts is not None:
+        normalized = normalized[normalized["date"] < end_ts]
+    return normalized.reset_index(drop=True)
 
 
 class CSVReferenceAdapter:
@@ -55,17 +89,7 @@ class CSVReferenceAdapter:
             raise FileNotFoundError(f"No CSV reference found for {symbol} in {self.reference_dir}")
 
         frame = pd.read_csv(existing)
-        normalized = normalize_reference_frame(frame)
-        if normalized.empty:
-            return normalized
-
-        start_ts = pd.to_datetime(start, errors="coerce") if start else None
-        end_ts = pd.to_datetime(end, errors="coerce") if end else None
-        if start_ts is not None:
-            normalized = normalized[normalized["date"] >= start_ts]
-        if end_ts is not None:
-            normalized = normalized[normalized["date"] < end_ts]
-        return normalized.reset_index(drop=True)
+        return filter_reference_frame(frame, start=start, end=end)
 
 
 class ManualEventAdapter:
@@ -90,10 +114,4 @@ class ManualEventAdapter:
             normalized["symbol"] = normalized["symbol"].astype(str).str.upper()
             normalized = normalized[normalized["symbol"] == symbol.upper()]
 
-        start_ts = pd.to_datetime(start, errors="coerce") if start else None
-        end_ts = pd.to_datetime(end, errors="coerce") if end else None
-        if start_ts is not None:
-            normalized = normalized[normalized["date"] >= start_ts]
-        if end_ts is not None:
-            normalized = normalized[normalized["date"] < end_ts]
-        return normalized.reset_index(drop=True)
+        return filter_reference_frame(normalized, start=start, end=end)

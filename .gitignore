@@ -58,10 +58,12 @@ checkpoints/
 models/
 
 # Archivos temporales
+*.tmp
 tmp/
 temp/
 .cache/
 workspace/
+verification_output/
 Dataset/
 Datasets/
 Versiones antiguas/

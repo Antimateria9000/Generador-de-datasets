@@ -34,7 +34,10 @@ class DatasetSchemaBuilder:
             raise SchemaBuildError("The sanitized frame is empty.")
 
         working = frame.copy()
-        resolved_preset = resolve_preset(mode, extras)
+        try:
+            resolved_preset = resolve_preset(mode, extras)
+        except ValueError as exc:
+            raise SchemaBuildError(str(exc)) from exc
         warnings = [
             f"Extra ignored for preset {resolved_preset.preset.name}: {item}"
             for item in resolved_preset.ignored_extras

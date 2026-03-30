@@ -2,6 +2,13 @@
 
 Generador profesional de datasets OHLCV con una sola arquitectura viva, saneamiento general obligatorio, saneamiento Qlib opcional/controlado, validacion interna, validacion externa pluggable y artefactos ordenados bajo `workspace/`.
 
+Contrato Qlib actual:
+
+- `factor` obligatorio
+- `adj_close` prohibido en el artefacto Qlib emitido
+- `dividends` prohibido en el artefacto Qlib emitido
+- `stock_splits` prohibido en el artefacto Qlib emitido
+
 ## Instalacion
 
 ```powershell
@@ -47,6 +54,7 @@ La UI permite:
 - boton `Generar dataset`
 
 Si el preset es `qlib`, la casilla `Saneamiento Qlib` se activa y se bloquea automaticamente.
+La UI tambien bloquea las extras incompatibles y el backend rechaza cualquier intento de colarlas por rutas alternativas.
 
 ## CLI single
 
@@ -81,8 +89,8 @@ Artefacto Qlib en paralelo sobre una salida general:
 Cuando el flujo Qlib esta activo, el sistema:
 
 - ejecuta saneamiento general
-- calcula `factor` con politica trazable basada en `stock_splits`
-- emite un CSV compatible con Qlib
+- calcula `factor` con politica trazable: prioriza `adj_close/close` cuando la semantica es segura y usa `stock_splits` solo como fallback controlado
+- emite un CSV Qlib estricto con `date, open, high, low, close, volume, factor`
 - genera sidecar tecnico con la politica de factor y razones de compatibilidad
 
 La salida Qlib-ready queda preparada para los dos pasos finales externos:

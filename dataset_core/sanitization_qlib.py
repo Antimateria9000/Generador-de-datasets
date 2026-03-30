@@ -24,6 +24,9 @@ class QlibSanitizationResult:
 
 class QlibSanitizer:
     def sanitize(self, frame: pd.DataFrame, include_adj_close: bool = False) -> QlibSanitizationResult:
+        if include_adj_close:
+            raise QlibSanitizationError("The closed Qlib contract does not allow adj_close in the emitted artifact.")
+
         try:
             factor_result = apply_factor_policy(frame, adjust_ohlcv=True)
         except FactorPolicyError as exc:
@@ -31,8 +34,6 @@ class QlibSanitizer:
 
         qlib_frame = factor_result.frame.copy()
         output_columns = ["date", "open", "high", "low", "close", "volume", "factor"]
-        if include_adj_close and "adj_close" in qlib_frame.columns:
-            output_columns.append("adj_close")
 
         missing = [column for column in output_columns if column not in qlib_frame.columns]
         if missing:

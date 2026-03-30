@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Callable, Iterable, Optional, Sequence
 
 import pandas as pd
 
+from dataset_core.date_windows import DateWindowError, resolve_temporal_bounds
 from dataset_core.settings import (
     DEFAULT_OUTPUT_ROOT,
     DQ_MODES,
@@ -17,6 +18,8 @@ from dataset_core.settings import (
 )
 
 _TOKEN_SPLIT_RE = re.compile(r"[\s,;]+")
+_NULL_TICKER_TOKENS = {"", "NAN", "NONE", "NULL", "NAT", "<NA>"}
+_FILE_TICKER_RE = re.compile(r"^[A-Z0-9^][A-Z0-9.\-_=^/]*$")
 
 
 class RequestContractError(ValueError):
@@ -37,11 +40,31 @@ def _normalize_symbol(symbol: str) -> str:
     return cleaned.strip("\"'")
 
 
-def dedupe_preserve_order(items: Iterable[str]) -> list[str]:
+def _normalize_file_ticker_candidate(symbol: object) -> str:
+    if symbol is None:
+        return ""
+    try:
+        if pd.isna(symbol):
+            return ""
+    except TypeError:
+        pass
+
+    normalized = _normalize_symbol(str(symbol))
+    if normalized in _NULL_TICKER_TOKENS:
+        return ""
+    if not _FILE_TICKER_RE.fullmatch(normalized):
+        return ""
+    return normalized
+
+
+def dedupe_preserve_order(
+    items: Iterable[object],
+    normalizer: Callable[[object], str] = _normalize_symbol,
+) -> list[str]:
     seen: set[str] = set()
     output: list[str] = []
     for item in items:
-        normalized = _normalize_symbol(item)
+        normalized = normalizer(item)
         if not normalized or normalized in seen:
             continue
         seen.add(normalized)
@@ -64,9 +87,9 @@ def load_tickers_from_file(path: Path) -> list[str]:
         candidate_columns = ["ticker", "tickers", "symbol", "symbols"]
         for column in candidate_columns:
             if column in frame.columns:
-                return dedupe_preserve_order(frame[column].astype(str).tolist())
-        flattened = frame.astype(str).fillna("").values.ravel().tolist()
-        return dedupe_preserve_order(flattened)
+                return dedupe_preserve_order(frame[column].tolist(), normalizer=_normalize_file_ticker_candidate)
+        flattened = frame.values.ravel().tolist()
+        return dedupe_preserve_order(flattened, normalizer=_normalize_file_ticker_candidate)
 
     for encoding in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
         try:
@@ -136,45 +159,32 @@ class TemporalRange:
     def from_inputs(
         cls,
         years: Optional[int],
-        start: Optional[str],
-        end: Optional[str],
+        start: Optional[object],
+        end: Optional[object],
+        *,
+        interval: str = "1d",
+        now_utc: pd.Timestamp | None = None,
     ) -> "TemporalRange":
         has_years = years is not None
-        has_exact = bool(start or end)
-
-        if has_years and has_exact:
-            raise RequestContractError("Use either rolling years or an exact date range, not both.")
-        if not has_years and not has_exact:
-            raise RequestContractError("You must provide either --years or --start/--end.")
-        if has_exact and (not start or not end):
-            raise RequestContractError("Exact range mode requires both --start and --end.")
-
         if has_years:
-            if int(years) <= 0:
-                raise RequestContractError("The number of years must be greater than zero.")
-            range_end = pd.Timestamp.now(tz="UTC").tz_convert(None).normalize()
-            range_start = range_end - pd.DateOffset(years=int(years))
-            return cls(
-                mode="rolling_years",
-                start=range_start,
-                end=range_end,
-                years=int(years),
-                reproducible=False,
-                start_iso=range_start.isoformat(),
-                end_iso=range_end.isoformat(),
+            years = int(years)
+        try:
+            mode, range_start, range_end, normalized_years, reproducible = resolve_temporal_bounds(
+                years=years,
+                start=start,
+                end=end,
+                interval=interval,
+                now_utc=now_utc,
             )
-
-        range_start = _parse_timestamp(str(start), "start")
-        range_end = _parse_timestamp(str(end), "end")
-        if range_start >= range_end:
-            raise RequestContractError("Invalid exact range: start must be earlier than end.")
+        except DateWindowError as exc:
+            raise RequestContractError(str(exc)) from exc
 
         return cls(
-            mode="exact_dates",
+            mode=mode,
             start=range_start,
             end=range_end,
-            years=None,
-            reproducible=True,
+            years=normalized_years,
+            reproducible=reproducible,
             start_iso=range_start.isoformat(),
             end_iso=range_end.isoformat(),
         )
@@ -187,6 +197,7 @@ class ProviderConfig:
     timeout: Optional[float] = None
     min_delay: Optional[float] = None
     max_intraday_lookback_days: Optional[int] = None
+    cache_dir: Optional[Path] = None
     allow_partial_intraday: bool = False
 
     def to_kwargs(self) -> dict[str, object]:
@@ -201,6 +212,8 @@ class ProviderConfig:
             payload["min_delay"] = float(self.min_delay)
         if self.max_intraday_lookback_days is not None:
             payload["max_intraday_lookback_days"] = int(self.max_intraday_lookback_days)
+        if self.cache_dir is not None:
+            payload["cache_dir"] = Path(self.cache_dir).expanduser().resolve()
         if self.allow_partial_intraday:
             payload["allow_partial_intraday"] = True
         return payload
@@ -257,7 +270,13 @@ class DatasetRequest:
         object.__setattr__(self, "output_dir", Path(self.output_dir).expanduser().resolve())
         normalized_extras = parse_extras(self.extras)
         if self.mode == "qlib":
-            normalized_extras = ["factor"] + (["adj_close"] if "adj_close" in normalized_extras else [])
+            disallowed_qlib_extras = [extra for extra in normalized_extras if extra != "factor"]
+            if disallowed_qlib_extras:
+                raise RequestContractError(
+                    "Preset qlib is closed and only allows the mandatory extra 'factor'. "
+                    f"Forbidden extras: {', '.join(disallowed_qlib_extras)}."
+                )
+            normalized_extras = ["factor"]
         object.__setattr__(self, "extras", normalized_extras)
         object.__setattr__(self, "dq_market", str(self.dq_market or "AUTO").strip().upper())
         if self.mode == "qlib" and not self.qlib_sanitization:

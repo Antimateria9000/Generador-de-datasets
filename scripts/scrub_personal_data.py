@@ -43,7 +43,7 @@ EXCLUDED_FILE_PATHS = {
     Path("scripts/scrub_personal_data.py"),
 }
 SENSITIVE_PATTERNS = {
-    "absolute_user_path": re.compile(r"([A-Za-z]:\\\\Users\\\\|/Users/)"),
+    "absolute_user_path": re.compile(r"([A-Za-z]:[\\/]+Users[\\/]+|/Users/|\\\\[^\\/\s]+\\[^\\/\s]+\\)"),
     "api_key": re.compile(r"\bapi[_-]?key\b\s*[:=]", re.IGNORECASE),
     "token": re.compile(r"\b(access_token|refresh_token|bearer_token|token)\b\s*[:=]", re.IGNORECASE),
     "secret": re.compile(r"\b(client_secret|secret)\b\s*[:=]", re.IGNORECASE),

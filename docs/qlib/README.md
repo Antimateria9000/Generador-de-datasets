@@ -10,6 +10,7 @@ Activacion:
 Contrato Qlib emitido:
 
 - columnas minimas: `date, open, high, low, close, volume, factor`
+- `adj_close`, `dividends` y `stock_splits` no forman parte del artefacto Qlib emitido
 - un CSV por simbolo con naming `TICKER.csv`
 - fechas ordenadas y sin duplicados
 - sidecar tecnico `*.qlib.json` con politica de factor, warnings y compatibilidad
@@ -18,7 +19,8 @@ Politica de factor:
 
 - el provider se fuerza a `auto_adjust=False` cuando el flujo requiere `factor`
 - el provider se fuerza a `actions=True` para recuperar splits
-- `factor` se reconstruye desde `stock_splits`
+- `factor` prioriza la ruta `adj_close/close` cuando es semanticamente segura
+- si esa ruta no es segura o no existe, el sistema intenta un fallback controlado con `stock_splits`
 - la salida Qlib ajusta `open/high/low/close` por `factor`
 - `volume` se ajusta con la inversa del `factor`
 

@@ -34,3 +34,19 @@ def test_clean_workspace_script_supports_selective_dry_run(tmp_path, patch_marke
     assert exit_code == 0
     assert batch_result.run_id in captured.out
     assert (tmp_path / "runs" / batch_result.run_id).exists()
+
+
+def test_clean_workspace_script_rejects_negative_older_than_days(tmp_path):
+    try:
+        clean_workspace_main(
+            [
+                "--workspace-root",
+                str(tmp_path),
+                "--older-than-days",
+                "-1",
+            ]
+        )
+    except SystemExit as exc:
+        assert "--older-than-days must be >= 0" in str(exc)
+    else:
+        raise AssertionError("Expected SystemExit for negative older-than-days.")

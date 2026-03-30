@@ -55,7 +55,7 @@ QLIB_REQUIRED_COLUMNS: Final[tuple[str, ...]] = (
     "volume",
     "factor",
 )
-QLIB_OPTIONAL_COLUMNS: Final[tuple[str, ...]] = ("adj_close",)
+QLIB_OPTIONAL_COLUMNS: Final[tuple[str, ...]] = ()
 
 REFERENCE_RELATIVE_TOLERANCE: Final[float] = 5e-3
 REFERENCE_SAMPLE_POINTS: Final[int] = 10

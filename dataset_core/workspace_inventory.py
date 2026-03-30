@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import date, datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -9,6 +11,8 @@ import pandas as pd
 from dataset_core.settings import ensure_workspace_tree
 
 _RUN_COMPONENT_KEYS = ("runs", "exports", "manifests", "reports", "temp", "logs")
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MIDNIGHT_TEXT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]00:00:00(?:\.0+)?$")
 
 
 def _safe_timestamp(value: object) -> pd.Timestamp | None:
@@ -54,6 +58,144 @@ def _format_bytes(size_bytes: int) -> str:
     return f"{size_bytes}B"
 
 
+def _unique_strings(values: list[object]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        item = str(value or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        output.append(item)
+    return output
+
+
+def _looks_like_calendar_filter(value: object) -> bool:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return True
+
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return bool(_DATE_ONLY_RE.fullmatch(text) or _MIDNIGHT_TEXT_RE.fullmatch(text))
+
+
+def _coerce_filter_timestamp(value: object, *, inclusive_end: bool = False) -> pd.Timestamp | None:
+    timestamp = _safe_timestamp(value)
+    if timestamp is None:
+        return None
+    if inclusive_end and _looks_like_calendar_filter(value):
+        return timestamp + pd.Timedelta(days=1)
+    return timestamp
+
+
+def _validate_older_than_days(value: int | None) -> int | None:
+    if value is None:
+        return None
+    normalized = int(value)
+    if normalized < 0:
+        raise ValueError("older_than_days must be >= 0.")
+    return normalized
+
+
+def _collect_run_evidence(component_paths: dict[str, Path]) -> list[dict[str, object]]:
+    evidence: list[dict[str, object]] = []
+    for meta_path in sorted(component_paths["reports"].glob("*.meta.json")):
+        payload = _read_json(meta_path)
+        if payload is not None:
+            evidence.append(payload)
+    if evidence:
+        return evidence
+
+    for manifest_path in sorted(component_paths["manifests"].glob("*.manifest.json")):
+        payload = _read_json(manifest_path)
+        if payload is not None:
+            evidence.append(payload)
+    return evidence
+
+
+def _infer_run_metadata(
+    component_paths: dict[str, Path],
+    manifest: dict[str, object] | None,
+) -> tuple[str | None, str | None, str | None, list[str], dict[str, int], bool, str]:
+    generated_at = None
+    preset = None
+    interval = None
+    tickers: list[str] = []
+    status_counts: dict[str, int] = {}
+    metadata_source = "batch_manifest" if manifest is not None else "reconstructed"
+
+    if manifest is not None:
+        generated_at = manifest.get("generated_at_utc")
+        request = manifest.get("request", {}) if isinstance(manifest.get("request"), dict) else {}
+        preset = request.get("mode")
+        interval = request.get("interval")
+        tickers = [str(item) for item in request.get("tickers", []) if str(item).strip()]
+        status_counts = {
+            str(key): int(value)
+            for key, value in (manifest.get("status_counts", {}) or {}).items()
+            if str(key).strip()
+        }
+
+    evidence_payloads = _collect_run_evidence(component_paths)
+    if evidence_payloads:
+        generated_candidates: list[pd.Timestamp] = []
+        observed_tickers: list[object] = list(tickers)
+        observed_statuses: list[str] = []
+        observed_presets: list[str] = []
+        observed_intervals: list[str] = []
+
+        for payload in evidence_payloads:
+            generated_timestamp = _safe_timestamp(payload.get("generated_at_utc"))
+            if generated_timestamp is not None:
+                generated_candidates.append(generated_timestamp)
+
+            request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+            if request:
+                observed_tickers.extend(request.get("tickers", []))
+                if request.get("mode"):
+                    observed_presets.append(str(request.get("mode")))
+                if request.get("interval"):
+                    observed_intervals.append(str(request.get("interval")))
+
+            ticker_resolution = payload.get("ticker_resolution")
+            if isinstance(ticker_resolution, dict):
+                observed_tickers.extend(
+                    [
+                        ticker_resolution.get("requested_ticker"),
+                        ticker_resolution.get("resolved_ticker"),
+                    ]
+                )
+
+            if payload.get("ticker"):
+                observed_tickers.append(payload.get("ticker"))
+
+            status = None
+            if isinstance(payload.get("status_resolution"), dict):
+                status = payload["status_resolution"].get("status")
+            if status is None:
+                status = payload.get("status")
+            if status is not None:
+                observed_statuses.append(str(status))
+
+        if generated_at is None and generated_candidates:
+            generated_at = min(generated_candidates).isoformat()
+        if preset is None and observed_presets:
+            preset = observed_presets[0]
+        if interval is None and observed_intervals:
+            interval = observed_intervals[0]
+        if not tickers and observed_tickers:
+            tickers = _unique_strings(observed_tickers)
+        if not status_counts and observed_statuses:
+            status_counts = {
+                status: observed_statuses.count(status)
+                for status in sorted(set(observed_statuses))
+            }
+
+    has_reconstructed_metadata = any([generated_at, preset, interval, tickers, status_counts])
+    return generated_at, preset, interval, tickers, status_counts, has_reconstructed_metadata, metadata_source
+
+
 @dataclass(frozen=True)
 class WorkspaceRunRecord:
     run_id: str
@@ -71,6 +213,7 @@ class WorkspaceRunRecord:
     missing_components: list[str] = field(default_factory=list)
     component_paths: dict[str, Path] = field(default_factory=dict)
     manifest_path: Path | None = None
+    metadata_source: str = "unknown"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -88,6 +231,7 @@ class WorkspaceRunRecord:
             "orphaned": self.orphaned,
             "missing_components": list(self.missing_components),
             "manifest_path": None if self.manifest_path is None else str(self.manifest_path.resolve()),
+            "metadata_source": self.metadata_source,
             "runs_path": str(self.component_paths["runs"].resolve()),
             "exports_path": str(self.component_paths["exports"].resolve()),
             "reports_path": str(self.component_paths["reports"].resolve()),
@@ -114,25 +258,12 @@ def list_workspace_runs(workspace_root: Path | None = None) -> list[WorkspaceRun
         component_paths = _resolve_component_paths(root, run_id)
         manifest_path = component_paths["runs"] / "manifest_batch.json"
         manifest = _read_json(manifest_path)
-        generated_at = None
-        preset = None
-        interval = None
-        tickers: list[str] = []
-        status_counts: dict[str, int] = {}
-        if manifest is not None:
-            generated_at = manifest.get("generated_at_utc")
-            request = manifest.get("request", {}) if isinstance(manifest.get("request"), dict) else {}
-            preset = request.get("mode")
-            interval = request.get("interval")
-            tickers = [str(item) for item in request.get("tickers", []) if str(item).strip()]
-            status_counts = {
-                str(key): int(value)
-                for key, value in (manifest.get("status_counts", {}) or {}).items()
-                if str(key).strip()
-            }
+        generated_at, preset, interval, tickers, status_counts, has_reconstructed_metadata, metadata_source = (
+            _infer_run_metadata(component_paths, manifest)
+        )
 
         missing_components = [key for key, path in component_paths.items() if not path.exists()]
-        orphaned = manifest is None or bool(missing_components)
+        orphaned = bool(missing_components) or (manifest is None and not has_reconstructed_metadata)
         size_bytes = sum(_directory_size(path) for path in component_paths.values() if path.exists())
 
         created_timestamp = _safe_timestamp(generated_at)
@@ -173,6 +304,7 @@ def list_workspace_runs(workspace_root: Path | None = None) -> list[WorkspaceRun
                 missing_components=missing_components,
                 component_paths=component_paths,
                 manifest_path=manifest_path if manifest_path.exists() else None,
+                metadata_source=metadata_source,
             )
         )
 
@@ -195,8 +327,9 @@ def filter_workspace_runs(
     preset_filter = str(preset or "").strip().lower()
     interval_filter = str(interval or "").strip().lower()
     status_filter = str(status or "").strip().lower()
-    from_ts = _safe_timestamp(created_from)
-    to_ts = _safe_timestamp(created_to)
+    older_than_days = _validate_older_than_days(older_than_days)
+    from_ts = _coerce_filter_timestamp(created_from)
+    to_ts = _coerce_filter_timestamp(created_to, inclusive_end=True)
 
     filtered: list[WorkspaceRunRecord] = []
     for record in runs:
@@ -216,7 +349,7 @@ def filter_workspace_runs(
         created_at = _safe_timestamp(record.created_at_utc)
         if from_ts is not None and (created_at is None or created_at < from_ts):
             continue
-        if to_ts is not None and (created_at is None or created_at > to_ts):
+        if to_ts is not None and (created_at is None or created_at >= to_ts):
             continue
 
         filtered.append(record)

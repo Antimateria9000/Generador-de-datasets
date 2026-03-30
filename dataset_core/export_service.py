@@ -112,7 +112,8 @@ class DatasetExportService:
         request: DatasetRequest,
         run_dirs: RunDirectories,
     ) -> TickerResult:
-        warnings: list[str] = []
+        material_warnings: list[str] = []
+        neutral_notes: list[str] = []
         errors: list[str] = []
         error_context: dict[str, object] | None = None
         stage = "ticker_start"
@@ -120,6 +121,7 @@ class DatasetExportService:
         resolved_ticker = requested_ticker
         provider_symbol = requested_ticker
         provider_metadata: dict[str, object] = {"warnings": []}
+        provider_warnings: list[str] = []
         auto_adjust = bool(request.auto_adjust)
         actions = bool(request.actions)
         artifact_key = artifact_stem(requested_ticker)
@@ -148,7 +150,7 @@ class DatasetExportService:
             dq_context = build_dq_context_payload(context)
             resolved_ticker = str(context.preferred_symbol or requested_ticker).upper()
             provider_symbol = resolved_ticker
-            warnings.extend(list(context.warnings))
+            neutral_notes.extend(list(context.warnings))
 
             stage = "acquisition"
             runtime_logger.info(
@@ -161,7 +163,7 @@ class DatasetExportService:
                 actions=request.actions,
                 requires_factor=request.requires_factor,
             )
-            warnings.extend(factor_warnings)
+            neutral_notes.extend(factor_warnings)
 
             fetch_result = self.acquisition_service.fetch(
                 symbol=resolved_ticker,
@@ -170,7 +172,8 @@ class DatasetExportService:
                 actions=actions,
             )
             provider_metadata = fetch_result.metadata.to_dict()
-            warnings.extend(list(provider_metadata.get("warnings", [])))
+            provider_warnings = list(provider_metadata.get("warnings", []))
+            neutral_notes.extend(provider_warnings)
 
             stage = "general_sanitization"
             runtime_logger.info("Running general sanitization.", extra={"stage": stage})
@@ -178,7 +181,7 @@ class DatasetExportService:
                 frame=fetch_result.data,
                 requested_extras=request.extras,
             )
-            warnings.extend(general_result.warnings)
+            material_warnings.extend(general_result.warnings)
 
             stage = "internal_validation"
             runtime_logger.info("Running internal validation.", extra={"stage": stage})
@@ -218,7 +221,7 @@ class DatasetExportService:
                     mode=request.mode,
                     extras=request.extras,
                 )
-                warnings.extend(general_schema.warnings)
+                neutral_notes.extend(general_schema.warnings)
                 artifacts.csv = run_dirs.csv_dir / build_csv_filename(resolved_ticker, request)
                 artifacts.canonical_csv = artifacts.csv
                 write_csv(general_schema.frame, artifacts.csv, temp_dir=run_dirs.temp_dir)
@@ -259,19 +262,16 @@ class DatasetExportService:
                 stage = "qlib_sanitization"
                 runtime_logger.info("Running Qlib sanitization.", extra={"stage": stage})
                 try:
-                    qlib_result = self.qlib_sanitizer.sanitize(
-                        general_result.frame,
-                        include_adj_close="adj_close" in request.extras,
-                    )
+                    qlib_result = self.qlib_sanitizer.sanitize(general_result.frame)
                     qlib_schema = self.schema_builder.build(
                         frame=qlib_result.frame,
                         mode="qlib",
-                        extras=["adj_close"] if "adj_close" in request.extras else [],
+                        extras=[],
                     )
                     qlib_compatible = qlib_schema.qlib_compatible
                     qlib_factor_policy = qlib_result.factor_policy
                     qlib_factor_source = qlib_result.factor_source
-                    warnings.extend(qlib_result.warnings)
+                    neutral_notes.extend(qlib_result.warnings)
                     artifacts.qlib_csv = run_dirs.qlib_dir / build_csv_filename(
                         resolved_ticker,
                         request,
@@ -325,7 +325,7 @@ class DatasetExportService:
                     write_json(artifacts.qlib_report, qlib_payload, temp_dir=run_dirs.temp_dir)
                     if request.mode == "qlib":
                         raise
-                    warnings.append(f"Qlib sanitization failed: {exc}")
+                    material_warnings.append(f"Qlib sanitization failed: {exc}")
                     runtime_logger.warning("Qlib sanitization failed: %s", exc, extra={"stage": stage})
 
             if artifacts.csv is None:
@@ -349,9 +349,12 @@ class DatasetExportService:
                 }
 
             status_resolution = resolve_ticker_status(
-                warnings=warnings,
+                warnings=material_warnings,
+                neutral_notes=neutral_notes,
                 internal_validation_status=internal_report.get("status"),
+                internal_validation_reason=internal_report.get("reason"),
                 external_validation_status=external_report.get("status"),
+                external_validation_reason=external_report.get("reason"),
                 qlib_requested=request.qlib_sanitization,
                 qlib_compatible=qlib_compatible,
                 qlib_errors=qlib_errors,
@@ -404,7 +407,7 @@ class DatasetExportService:
                 "qlib_artifact": qlib_payload,
                 "internal_validation": internal_report,
                 "external_validation": external_report,
-                "warnings": warnings,
+                "warnings": material_warnings,
                 "neutral_notes": list(status_resolution.neutral_notes),
                 "run_log_path": str(run_dirs.run_log_path.resolve()),
             }
@@ -429,14 +432,14 @@ class DatasetExportService:
                 columns=list(primary_frame.columns),
                 status_reasons=status_resolution.reasons,
                 neutral_notes=status_resolution.neutral_notes,
-                warnings=warnings,
+                warnings=material_warnings,
                 errors=errors,
                 internal_validation_status=str(internal_report["status"]),
                 external_validation_status=str(external_report["status"]),
                 factor_policy=primary_factor_policy,
                 factor_source=primary_factor_source,
                 provider_symbol=provider_symbol,
-                provider_warnings=list(provider_metadata.get("warnings", [])),
+                provider_warnings=provider_warnings,
                 run_log_path=run_dirs.run_log_path,
                 artifacts=artifacts,
             )
@@ -476,9 +479,11 @@ class DatasetExportService:
                 qlib_compatible=False,
                 columns=[],
                 status_reasons=list(errors),
-                warnings=warnings,
+                neutral_notes=neutral_notes,
+                warnings=material_warnings,
                 errors=errors,
                 provider_symbol=provider_symbol,
+                provider_warnings=provider_warnings,
                 error_context=error_context,
                 run_log_path=run_dirs.run_log_path,
                 artifacts=artifacts,
@@ -489,11 +494,13 @@ class DatasetExportService:
                 "ticker": requested_ticker,
                 "status": "error",
                 "request": request.to_dict(),
-                "warnings": warnings,
+                "warnings": material_warnings,
+                "neutral_notes": neutral_notes,
                 "errors": errors,
                 "requested_ticker": requested_ticker,
                 "resolved_ticker": resolved_ticker,
                 "provider_symbol": provider_symbol,
+                "provider_warnings": provider_warnings,
                 "run_log_path": str(run_dirs.run_log_path.resolve()),
                 "error": error_context,
                 "stage": stage,

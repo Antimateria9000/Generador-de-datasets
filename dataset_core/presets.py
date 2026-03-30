@@ -41,9 +41,9 @@ PRESETS: dict[str, OutputPreset] = {
     ),
     "qlib": OutputPreset(
         name="qlib",
-        description="Closed Qlib contract: adjusted OHLCV, mandatory factor and hard validation.",
+        description="Closed Qlib contract: strict OHLCV + factor only, with hard validation.",
         default_extras=("factor",),
-        allowed_extras=("factor",) + QLIB_OPTIONAL_COLUMNS,
+        allowed_extras=("factor",),
         forced_extras=("factor",),
         locked_extras=("factor",),
         qlib_ready=True,
@@ -63,6 +63,14 @@ def get_preset(name: str) -> OutputPreset:
 def resolve_preset(name: str, requested_extras: list[str] | tuple[str, ...]) -> ResolvedPreset:
     preset = get_preset(name)
     requested = [str(item).strip().lower() for item in requested_extras if str(item).strip()]
+
+    if preset.locked_extras:
+        disallowed = tuple(item for item in requested if item not in preset.locked_extras)
+        if disallowed:
+            raise ValueError(
+                f"Preset {preset.name} is closed and does not allow extras: {', '.join(disallowed)}."
+            )
+
     selected: list[str] = list(preset.default_extras)
     ignored: list[str] = []
 
@@ -82,8 +90,6 @@ def resolve_preset(name: str, requested_extras: list[str] | tuple[str, ...]) -> 
 
     if preset.name == "qlib":
         columns = list(QLIB_REQUIRED_COLUMNS)
-        if "adj_close" in ordered_selected:
-            columns.append("adj_close")
     else:
         columns = list(CORE_COLUMNS)
         columns.extend(extra for extra in _EXTRA_ORDER if extra in ordered_selected)
