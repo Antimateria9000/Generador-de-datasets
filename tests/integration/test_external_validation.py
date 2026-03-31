@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import pandas as pd
 
-from dataset_core.reference_adapters import CSVReferenceAdapter
+from dataset_core.reference_adapters import CSVReferenceAdapter, ManualEventAdapter
 from dataset_core.validation_external import ExternalValidationService
 from dataset_core.batch_orchestrator import BatchOrchestrator
 from dataset_core.contracts import DatasetRequest, ExternalValidationConfig, TemporalRange
@@ -45,8 +46,9 @@ def test_external_validation_reports_not_validated_without_reference(tmp_path, p
     result = batch_result.results[0]
 
     assert result.external_validation_status == "not_validated"
-    assert result.status == "success"
-    assert any("external reference" in note.lower() or "did not run" in note.lower() for note in result.neutral_notes)
+    assert result.status == "warning"
+    assert result.validation_outcome == "success_partial_validation"
+    assert any("external validation did not run" in reason.lower() for reason in result.status_reasons)
 
 
 def test_external_validation_reports_adapter_error_separately_from_missing_reference(tmp_path):
@@ -141,3 +143,60 @@ def test_external_validation_normalizes_naive_and_utc_aware_dates_before_merge()
 
     assert report["status"] == "passed"
     assert report["adapter_reports"][0]["overlap_rows"] == 2
+
+
+def test_manual_event_adapter_is_validated_as_sparse_events_not_price_reference(tmp_path):
+    dataset = make_provider_frame("MSFT", periods=3)
+    dataset.loc[1, "stock_splits"] = 2.0
+    events_file = tmp_path / "manual_events.json"
+    events_file.write_text(
+        json.dumps(
+            [
+                {
+                    "symbol": "MSFT",
+                    "date": str(dataset.loc[1, "date"].date()),
+                    "stock_splits": 2.0,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = ExternalValidationService(event_adapters=[ManualEventAdapter(events_file)]).validate(
+        frame=dataset,
+        symbol="MSFT",
+        start=None,
+        end=None,
+    ).to_dict()
+
+    adapter_report = report["adapter_reports"][0]
+    assert report["status"] == "passed"
+    assert adapter_report["scope"] == "event"
+    assert adapter_report["checked_event_count"] == 1
+    assert adapter_report["matched_event_count"] == 1
+    assert "gap_ratio" not in adapter_report
+
+
+def test_manual_event_adapter_does_not_fail_on_sparse_reference_calendar(tmp_path):
+    dataset = make_provider_frame("MSFT", periods=5)
+    dataset.loc[2, "dividends"] = 1.5
+    dataset.loc[4, "stock_splits"] = 3.0
+    events_file = tmp_path / "manual_events.csv"
+    pd.DataFrame(
+        [
+            {"symbol": "MSFT", "date": dataset.loc[2, "date"], "dividends": 1.5},
+        ]
+    ).to_csv(events_file, index=False)
+
+    report = ExternalValidationService(event_adapters=[ManualEventAdapter(events_file)]).validate(
+        frame=dataset,
+        symbol="MSFT",
+        start=None,
+        end=None,
+    ).to_dict()
+
+    adapter_report = report["adapter_reports"][0]
+    assert report["status"] == "passed"
+    assert adapter_report["status"] == "passed"
+    assert adapter_report["scope"] == "event"
+    assert adapter_report["checked_event_count"] == 1

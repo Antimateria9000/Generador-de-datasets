@@ -8,6 +8,7 @@ from typing import Callable, Iterable, Optional, Sequence
 import pandas as pd
 
 from dataset_core.date_windows import DateWindowError, resolve_temporal_bounds
+from dataset_core.path_safety import normalize_filename_override
 from dataset_core.settings import (
     DEFAULT_OUTPUT_ROOT,
     DQ_MODES,
@@ -314,6 +315,11 @@ class DatasetRequest:
 
         object.__setattr__(self, "tickers", normalized_tickers)
         object.__setattr__(self, "output_dir", Path(self.output_dir).expanduser().resolve())
+        if self.filename_override:
+            try:
+                object.__setattr__(self, "filename_override", normalize_filename_override(self.filename_override))
+            except ValueError as exc:
+                raise RequestContractError(str(exc)) from exc
         normalized_extras = parse_extras(self.extras)
         if self.mode == "qlib":
             disallowed_qlib_extras = [extra for extra in normalized_extras if extra != "factor"]

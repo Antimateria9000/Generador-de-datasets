@@ -5,7 +5,14 @@ from typing import Iterable
 
 import pandas as pd
 
-from dataset_core.reference_adapters import ReferenceAdapter, normalize_reference_frame
+from dataset_core.reference_adapters import (
+    EventReferenceAdapter,
+    PriceReferenceAdapter,
+    ReferenceAdapter,
+    adapter_validation_scope,
+    normalize_event_frame,
+    normalize_reference_frame,
+)
 from dataset_core.settings import REFERENCE_RELATIVE_TOLERANCE, REFERENCE_SAMPLE_POINTS
 
 
@@ -18,8 +25,21 @@ class ExternalValidationResult:
 
 
 class ExternalValidationService:
-    def __init__(self, adapters: Iterable[ReferenceAdapter] | None = None) -> None:
-        self.adapters = list(adapters or [])
+    def __init__(
+        self,
+        adapters: Iterable[ReferenceAdapter] | None = None,
+        *,
+        price_adapters: Iterable[PriceReferenceAdapter] | None = None,
+        event_adapters: Iterable[EventReferenceAdapter] | None = None,
+    ) -> None:
+        self.price_adapters = list(price_adapters or [])
+        self.event_adapters = list(event_adapters or [])
+
+        for adapter in adapters or []:
+            if adapter_validation_scope(adapter) == "event":
+                self.event_adapters.append(adapter)  # type: ignore[arg-type]
+            else:
+                self.price_adapters.append(adapter)  # type: ignore[arg-type]
 
     def validate(
         self,
@@ -29,6 +49,7 @@ class ExternalValidationService:
         end: str | None,
     ) -> ExternalValidationResult:
         dataset = normalize_reference_frame(frame)
+        dataset_events = normalize_event_frame(frame)
         adapter_reports: list[dict[str, object]] = []
 
         if dataset.empty:
@@ -46,7 +67,7 @@ class ExternalValidationService:
         has_adapter_error = False
         has_validation_error = False
 
-        for adapter in self.adapters:
+        for adapter in self.price_adapters:
             adapter_name = adapter.name()
             try:
                 reference = normalize_reference_frame(adapter.fetch_reference(symbol, start, end))
@@ -97,6 +118,71 @@ class ExternalValidationService:
                         "status": "validation_error",
                         "reason": f"Validation error: {exc}",
                         "score": None,
+                    }
+                )
+                continue
+
+            if comparison_report["status"] == "failed":
+                has_failure = True
+            else:
+                validated_scores.append(float(comparison_report["score"]))
+            adapter_reports.append(comparison_report)
+
+        for adapter in self.event_adapters:
+            adapter_name = adapter.name()
+            try:
+                reference_events = normalize_event_frame(adapter.fetch_events(symbol, start, end))
+            except FileNotFoundError as exc:
+                adapter_reports.append(
+                    {
+                        "adapter": adapter_name,
+                        "status": "not_validated",
+                        "reason": str(exc),
+                        "score": None,
+                        "scope": "event",
+                    }
+                )
+                continue
+            except Exception as exc:
+                has_adapter_error = True
+                adapter_reports.append(
+                    {
+                        "adapter": adapter_name,
+                        "status": "adapter_error",
+                        "reason": f"Adapter error: {exc}",
+                        "score": None,
+                        "scope": "event",
+                    }
+                )
+                continue
+
+            if reference_events.empty:
+                adapter_reports.append(
+                    {
+                        "adapter": adapter_name,
+                        "status": "not_validated",
+                        "reason": "Event reference adapter returned no manual events for the requested range.",
+                        "score": None,
+                        "scope": "event",
+                    }
+                )
+                continue
+
+            try:
+                comparison_report = self._build_event_adapter_report(
+                    adapter_name=adapter_name,
+                    dataset_events=dataset_events,
+                    reference_events=reference_events,
+                )
+            except Exception as exc:
+                has_validation_error = True
+                adapter_reports.append(
+                    {
+                        "adapter": adapter_name,
+                        "status": "validation_error",
+                        "reason": f"Validation error: {exc}",
+                        "score": None,
+                        "scope": "event",
                     }
                 )
                 continue
@@ -242,6 +328,7 @@ class ExternalValidationService:
             "status": status,
             "reason": None if not reasons else " | ".join(reasons),
             "score": round(score, 3),
+            "scope": "price",
             "overlap_rows": overlap,
             "gap_count": gap_count,
             "gap_ratio": round(gap_ratio, 6),
@@ -250,6 +337,71 @@ class ExternalValidationService:
             "zero_reference_mismatches": zero_reference_mismatches,
             "split_mismatch_count": split_mismatch_count,
             "sample_dates": sample_dates,
+        }
+
+    @staticmethod
+    def _build_event_adapter_report(
+        *,
+        adapter_name: str,
+        dataset_events: pd.DataFrame,
+        reference_events: pd.DataFrame,
+    ) -> dict[str, object]:
+        if reference_events.empty:
+            return {
+                "adapter": adapter_name,
+                "status": "not_validated",
+                "reason": "No manual events were provided.",
+                "score": None,
+                "scope": "event",
+            }
+
+        if dataset_events.empty:
+            dataset_lookup = pd.DataFrame(columns=["date", "dividends", "stock_splits"]).set_index("date")
+        else:
+            dataset_lookup = dataset_events.copy().set_index("date")
+
+        mismatches: list[str] = []
+        matched_events = 0
+        checked_events = 0
+        checked_columns: set[str] = set()
+
+        for row in reference_events.itertuples(index=False):
+            date_value = pd.Timestamp(row.date)
+            dataset_row = dataset_lookup.loc[date_value] if date_value in dataset_lookup.index else None
+
+            for column in ("dividends", "stock_splits"):
+                reference_value = float(getattr(row, column, 0.0) or 0.0)
+                if abs(reference_value) <= 1e-12:
+                    continue
+                checked_events += 1
+                checked_columns.add(column)
+
+                dataset_value = 0.0
+                if dataset_row is not None:
+                    if isinstance(dataset_row, pd.DataFrame):
+                        dataset_value = float(pd.to_numeric(dataset_row[column], errors="coerce").fillna(0.0).iloc[-1])
+                    else:
+                        dataset_value = float(pd.to_numeric(pd.Series([dataset_row[column]]), errors="coerce").fillna(0.0).iloc[0])
+
+                if abs(dataset_value - reference_value) <= 1e-8:
+                    matched_events += 1
+                else:
+                    mismatches.append(
+                        f"{column} mismatch at {date_value.date().isoformat()}: dataset={dataset_value} reference={reference_value}"
+                    )
+
+        score = 100.0 if checked_events == 0 else max(0.0, 100.0 * (matched_events / checked_events))
+        return {
+            "adapter": adapter_name,
+            "status": "passed" if not mismatches else "failed",
+            "reason": None if not mismatches else " | ".join(mismatches),
+            "score": round(score, 3),
+            "scope": "event",
+            "checked_event_count": checked_events,
+            "matched_event_count": matched_events,
+            "mismatch_count": len(mismatches),
+            "checked_columns": sorted(checked_columns),
+            "sample_dates": reference_events["date"].head(REFERENCE_SAMPLE_POINTS).dt.strftime("%Y-%m-%d").tolist(),
         }
 
     @staticmethod

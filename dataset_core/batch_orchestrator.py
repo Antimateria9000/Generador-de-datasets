@@ -46,12 +46,13 @@ class BatchOrchestrator:
         self,
         config: ExternalValidationConfig,
     ) -> ExternalValidationService:
-        adapters = []
+        price_adapters = []
+        event_adapters = []
         if config.reference_dir is not None:
-            adapters.append(CSVReferenceAdapter(config.reference_dir))
+            price_adapters.append(CSVReferenceAdapter(config.reference_dir))
         if config.manual_events_file is not None:
-            adapters.append(ManualEventAdapter(config.manual_events_file))
-        return ExternalValidationService(adapters=adapters)
+            event_adapters.append(ManualEventAdapter(config.manual_events_file))
+        return ExternalValidationService(price_adapters=price_adapters, event_adapters=event_adapters)
 
     @staticmethod
     def _normalize_execution_mode(execution_mode: str) -> str:

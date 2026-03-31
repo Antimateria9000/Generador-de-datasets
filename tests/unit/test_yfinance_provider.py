@@ -135,3 +135,111 @@ def test_fetch_many_matches_single_ticker_results_for_compatible_daily_batch(mon
     assert_frame_equal(many["MSFT"].data, single_msft.data)
     assert_frame_equal(many["AAPL"].data, single_aapl.data)
     assert "MSFT AAPL" in download_calls
+
+
+def test_download_backend_propagates_timeout_for_single_symbol_fallback(monkeypatch, tmp_path):
+    download_calls = []
+
+    class _FailingTicker:
+        def history(self, **kwargs):
+            raise RuntimeError("force download backend")
+
+    raw = make_provider_frame("MSFT").rename(
+        columns={
+            "date": "Date",
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "adj_close": "Adj Close",
+            "volume": "Volume",
+            "dividends": "Dividends",
+            "stock_splits": "Stock Splits",
+        }
+    ).set_index("Date")
+
+    def _fake_download(tickers, **kwargs):
+        download_calls.append({"tickers": tickers, **kwargs})
+        return raw
+
+    monkeypatch.setattr("providers.yfinance_provider.yf.Ticker", lambda symbol: _FailingTicker())
+    monkeypatch.setattr("providers.yfinance_provider.yf.download", _fake_download)
+
+    provider = YFinanceProvider(cache_dir=tmp_path / "cache", retries=1, min_delay=0, timeout=7.5)
+    result = provider.get_history_bundle("MSFT", start="2024-01-01", end="2024-01-06", interval="1d")
+
+    assert result.metadata.backend_used == "download"
+    assert download_calls
+    assert download_calls[0]["timeout"] == 7.5
+
+
+def test_download_many_propagates_timeout_for_grouped_requests(monkeypatch, tmp_path):
+    raw_frames = {}
+    for symbol in ("MSFT", "AAPL"):
+        raw_frames[symbol] = make_provider_frame(symbol).rename(
+            columns={
+                "date": "Date",
+                "open": "Open",
+                "high": "High",
+                "low": "Low",
+                "close": "Close",
+                "adj_close": "Adj Close",
+                "volume": "Volume",
+                "dividends": "Dividends",
+                "stock_splits": "Stock Splits",
+            }
+        ).set_index("Date")
+
+    download_calls = []
+
+    def _fake_download(tickers, **kwargs):
+        download_calls.append({"tickers": tickers, **kwargs})
+        symbols = str(tickers).split()
+        return pd.concat({symbol: raw_frames[symbol] for symbol in symbols}, axis=1)
+
+    monkeypatch.setattr("providers.yfinance_provider.yf.download", _fake_download)
+
+    provider = YFinanceProvider(cache_dir=tmp_path / "cache", retries=1, min_delay=0, timeout=9.25)
+    result = provider.get_history_bundle(["MSFT", "AAPL"], start="2024-01-01", end="2024-01-06", interval="1d")
+
+    assert list(result) == ["MSFT", "AAPL"]
+    assert all(item.metadata.backend_used == "download_many" for item in result.values())
+    assert download_calls
+    assert download_calls[0]["timeout"] == 9.25
+
+
+def test_download_timeout_is_preserved_across_retries(monkeypatch, tmp_path):
+    download_timeouts = []
+
+    class _FailingTicker:
+        def history(self, **kwargs):
+            raise RuntimeError("force download backend")
+
+    raw = make_provider_frame("MSFT").rename(
+        columns={
+            "date": "Date",
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "adj_close": "Adj Close",
+            "volume": "Volume",
+            "dividends": "Dividends",
+            "stock_splits": "Stock Splits",
+        }
+    ).set_index("Date")
+
+    def _flaky_download(tickers, **kwargs):
+        download_timeouts.append(kwargs["timeout"])
+        if len(download_timeouts) == 1:
+            raise RuntimeError("transient download failure")
+        return raw
+
+    monkeypatch.setattr("providers.yfinance_provider.yf.Ticker", lambda symbol: _FailingTicker())
+    monkeypatch.setattr("providers.yfinance_provider.yf.download", _flaky_download)
+
+    provider = YFinanceProvider(cache_dir=tmp_path / "cache", retries=2, min_delay=0, timeout=4.5)
+    result = provider.get_history_bundle("MSFT", start="2024-01-01", end="2024-01-06", interval="1d")
+
+    assert result.metadata.backend_used == "download"
+    assert download_timeouts == [4.5, 4.5]

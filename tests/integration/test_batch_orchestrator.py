@@ -84,7 +84,7 @@ def test_batch_orchestrator_persists_run_log_and_enriched_error_meta(tmp_path, p
     assert meta_payload["run_log_path"] == str(batch_result.run_log_path.resolve())
 
 
-def test_contextual_market_notes_do_not_degrade_status(monkeypatch, tmp_path):
+def test_contextual_market_notes_do_not_add_extra_degradation(monkeypatch, tmp_path):
     export_service = DatasetExportService(
         acquisition_service=DummyAcquisitionService({"MSFT": make_provider_frame("MSFT")})
     )
@@ -135,12 +135,14 @@ def test_contextual_market_notes_do_not_degrade_status(monkeypatch, tmp_path):
         )
     ).results[0]
 
-    assert result.status == "success"
+    assert result.status == "warning"
+    assert result.validation_outcome == "success_partial_validation"
     assert result.warnings == []
     assert any("metadata de Yahoo" in note for note in result.neutral_notes)
+    assert any("External validation did not run." in reason for reason in result.status_reasons)
 
 
-def test_internal_validation_unsupported_does_not_degrade_status(tmp_path, patch_market_context):
+def test_internal_validation_unsupported_degrades_to_warning(tmp_path, patch_market_context):
     export_service = DatasetExportService(
         acquisition_service=DummyAcquisitionService({"MSFT": make_provider_frame("MSFT")})
     )
@@ -155,8 +157,9 @@ def test_internal_validation_unsupported_does_not_degrade_status(tmp_path, patch
     ).results[0]
 
     assert result.internal_validation_status == "unsupported"
-    assert result.status == "success"
-    assert any("interval=1d" in note for note in result.neutral_notes)
+    assert result.status == "warning"
+    assert result.validation_outcome == "success_partial_validation"
+    assert any("interval=1d" in reason for reason in result.status_reasons)
 
 
 def test_batch_orchestrator_cleans_orphan_tmp_files_after_run(tmp_path, patch_market_context):
@@ -194,7 +197,8 @@ def test_batch_orchestrator_sequential_mode_smoke(tmp_path, patch_market_context
         execution_mode="sequential",
     )
 
-    assert batch_result.results[0].status == "success"
+    assert batch_result.results[0].status == "warning"
+    assert batch_result.results[0].validation_outcome == "success_partial_validation"
     assert batch_result.results[0].artifacts.csv.exists()
     assert export_service.acquisition_service.last_session.metrics["fetch_calls"] == 1
 

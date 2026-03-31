@@ -201,16 +201,20 @@ def summarize_batch(batch_result) -> None:
     logger.info("Meta dir: %s", batch_result.meta_dir)
     logger.info("Report dir: %s", batch_result.report_dir)
     logger.info(
-        "Batch summary | success=%s warning=%s error=%s",
+        "Batch summary | success=%s warning=%s error=%s | validated_success=%s partial_validation=%s validation_failure=%s",
         counts.get("success", 0),
         counts.get("warning", 0),
         counts.get("error", 0),
+        batch_result.validation_outcome_counts.get("success_validated", 0),
+        batch_result.validation_outcome_counts.get("success_partial_validation", 0),
+        batch_result.validation_outcome_counts.get("failure", 0),
     )
     for result in batch_result.results:
         logger.info(
-            "Ticker %s | status=%s | qlib_compatible=%s | csv=%s",
+            "Ticker %s | status=%s | validation_outcome=%s | qlib_compatible=%s | csv=%s",
             result.ticker,
             result.status,
+            result.validation_outcome,
             result.qlib_compatible,
             result.artifacts.csv,
         )

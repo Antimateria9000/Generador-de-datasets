@@ -26,12 +26,14 @@ def build_batch_manifest(request: DatasetRequest, batch_result: BatchResult) -> 
         "manifest_txt_path": str(batch_result.manifest_txt_path.resolve()),
         "run_log_path": None if batch_result.run_log_path is None else str(batch_result.run_log_path.resolve()),
         "status_counts": batch_result.status_counts,
+        "validation_outcome_counts": batch_result.validation_outcome_counts,
         "results": [result.to_dict() for result in batch_result.results],
     }
 
 
 def render_batch_manifest_text(manifest: dict[str, object]) -> str:
     counts = manifest.get("status_counts", {})
+    validation_counts = manifest.get("validation_outcome_counts", {})
     lines = [
         f"Batch manifest: {manifest.get('batch_id')}",
         f"Run id: {manifest.get('run_id')}",
@@ -44,12 +46,15 @@ def render_batch_manifest_text(manifest: dict[str, object]) -> str:
         f"Success: {counts.get('success', 0)}",
         f"Warning: {counts.get('warning', 0)}",
         f"Error: {counts.get('error', 0)}",
+        f"Validated success: {validation_counts.get('success_validated', 0)}",
+        f"Partial validation: {validation_counts.get('success_partial_validation', 0)}",
+        f"Validation failure: {validation_counts.get('failure', 0)}",
         "",
     ]
 
     for result in manifest.get("results", []):
         lines.append(
-            f"- {result.get('ticker')}: status={result.get('status')} qlib_compatible={result.get('qlib_compatible')}"
+            f"- {result.get('ticker')}: status={result.get('status')} validation_outcome={result.get('validation_outcome')} qlib_compatible={result.get('qlib_compatible')}"
         )
         lines.append(f"  csv={result.get('csv_path')}")
         lines.append(f"  meta={result.get('meta_path')}")

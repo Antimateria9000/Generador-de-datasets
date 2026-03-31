@@ -44,6 +44,7 @@ class TickerResult:
     resolved_ticker: str
     status: str
     qlib_compatible: bool
+    validation_outcome: str = "success_validated"
     columns: list[str] = field(default_factory=list)
     status_reasons: list[str] = field(default_factory=list)
     neutral_notes: list[str] = field(default_factory=list)
@@ -65,6 +66,7 @@ class TickerResult:
             "requested_ticker": self.requested_ticker,
             "resolved_ticker": self.resolved_ticker,
             "status": self.status,
+            "validation_outcome": self.validation_outcome,
             "qlib_compatible": self.qlib_compatible,
             "columns": list(self.columns),
             "status_reasons": list(self.status_reasons),
@@ -104,6 +106,14 @@ class BatchResult:
             counts[result.status] = counts.get(result.status, 0) + 1
         return counts
 
+    @property
+    def validation_outcome_counts(self) -> dict[str, int]:
+        counts = {"success_validated": 0, "success_partial_validation": 0, "failure": 0}
+        for result in self.results:
+            outcome = str(result.validation_outcome or "failure")
+            counts[outcome] = counts.get(outcome, 0) + 1
+        return counts
+
     def to_dict(self) -> dict[str, object]:
         return {
             "batch_id": self.batch_id,
@@ -116,5 +126,6 @@ class BatchResult:
             "manifest_txt_path": str(self.manifest_txt_path.resolve()),
             "run_log_path": _path_or_none(self.run_log_path),
             "status_counts": self.status_counts,
+            "validation_outcome_counts": self.validation_outcome_counts,
             "results": [result.to_dict() for result in self.results],
         }

@@ -52,6 +52,16 @@ def test_dataset_request_rejects_batch_filename_override():
         )
 
 
+def test_dataset_request_normalizes_filename_override_to_safe_basename():
+    request = DatasetRequest(
+        tickers=["MSFT"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        filename_override="..\\..\\unsafe folder\\report?.csv",
+    )
+
+    assert request.filename_override == "report_.csv"
+
+
 def test_dataset_request_rejects_forbidden_qlib_extras():
     with pytest.raises(RequestContractError, match="Preset qlib is closed"):
         DatasetRequest(

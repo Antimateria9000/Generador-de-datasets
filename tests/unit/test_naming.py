@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 
 from dataset_core.contracts import DatasetRequest, TemporalRange
-from dataset_core.naming import build_csv_filename, build_run_id, sanitize_symbol_for_csv, summarize_tickers_for_run_id
+from dataset_core.naming import (
+    build_csv_filename,
+    build_csv_output_path,
+    build_run_id,
+    sanitize_symbol_for_csv,
+    summarize_tickers_for_run_id,
+)
 
 
 @pytest.mark.parametrize(
@@ -44,6 +50,20 @@ def test_non_qlib_filename_keeps_range_and_interval():
         interval="1d",
     )
     assert build_csv_filename("MSFT", request).startswith("MSFT_1d_5y")
+
+
+def test_filename_override_is_treated_as_safe_basename_only(tmp_path):
+    request = DatasetRequest(
+        tickers=["MSFT"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        filename_override="../nested/..\\escape?.csv",
+    )
+
+    target = build_csv_output_path(tmp_path, "MSFT", request)
+
+    assert request.filename_override == "escape_.csv"
+    assert target.parent == tmp_path.resolve()
+    assert target.name == "escape_.csv"
 
 
 def test_run_id_is_human_readable_for_long_ticker_lists(monkeypatch):

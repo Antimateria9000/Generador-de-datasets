@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataset_core.status_resolution import resolve_ticker_status
 
 
-def test_not_validated_external_status_is_neutral():
+def test_not_validated_external_status_degrades_to_warning():
     result = resolve_ticker_status(
         warnings=[],
         internal_validation_status="skipped",
@@ -13,9 +13,9 @@ def test_not_validated_external_status_is_neutral():
         qlib_errors=[],
     )
 
-    assert result.status == "success"
-    assert result.reasons == []
-    assert "External validation did not run." in result.neutral_notes
+    assert result.status == "warning"
+    assert result.validation_outcome == "success_partial_validation"
+    assert "External validation did not run." in result.reasons
 
 
 def test_failed_external_status_degrades_to_warning():
@@ -28,11 +28,12 @@ def test_failed_external_status_degrades_to_warning():
         qlib_errors=[],
     )
 
-    assert result.status == "warning"
+    assert result.status == "error"
+    assert result.validation_outcome == "failure"
     assert result.reasons == ["External validation reported blocking differences."]
 
 
-def test_internal_unsupported_and_passed_with_warnings_are_neutral():
+def test_internal_unsupported_degrades_to_warning():
     result = resolve_ticker_status(
         warnings=[],
         neutral_notes=[],
@@ -44,9 +45,9 @@ def test_internal_unsupported_and_passed_with_warnings_are_neutral():
         qlib_errors=[],
     )
 
-    assert result.status == "success"
-    assert result.reasons == []
-    assert "Internal DQ safe mode is guaranteed only for interval=1d." in result.neutral_notes
+    assert result.status == "warning"
+    assert result.validation_outcome == "success_partial_validation"
+    assert "Internal DQ safe mode is guaranteed only for interval=1d." in result.reasons
 
 
 def test_adapter_error_external_status_is_material():
@@ -60,6 +61,7 @@ def test_adapter_error_external_status_is_material():
         qlib_errors=[],
     )
 
-    assert result.status == "warning"
-    assert result.reasons == ["Adapter error: boom"]
-    assert "Internal validation passed with non-blocking warnings." in result.neutral_notes
+    assert result.status == "error"
+    assert result.validation_outcome == "failure"
+    assert "Adapter error: boom" in result.reasons
+    assert "Internal validation passed with warnings." in result.reasons

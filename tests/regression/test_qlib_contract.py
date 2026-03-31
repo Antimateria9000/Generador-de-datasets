@@ -31,7 +31,8 @@ def test_qlib_contract_writes_expected_columns_and_filename(tmp_path, patch_mark
     assert result.artifacts.csv.name == "MSFT.csv"
     assert list(frame.columns) == ["date", "open", "high", "low", "close", "volume", "factor"]
     assert manifest["qlib_compatible"] is True
-    assert result.status == "success"
+    assert result.status == "warning"
+    assert result.validation_outcome == "success_partial_validation"
     assert result.factor_source == "adj_close_ratio"
 
 
@@ -57,7 +58,8 @@ def test_batch_manifest_keeps_global_summary_and_paths(tmp_path, patch_market_co
     manifest = json.loads(batch_result.manifest_json_path.read_text(encoding="utf-8"))
 
     assert manifest["status_counts"]["error"] == 0
+    assert manifest["validation_outcome_counts"]["success_partial_validation"] == 2
     assert len(manifest["results"]) == 2
     assert manifest["results"][0]["csv_path"]
     assert manifest["run_log_path"] == str(batch_result.run_log_path.resolve())
-    assert manifest["results"][0]["status"] == "success"
+    assert manifest["results"][0]["status"] == "warning"

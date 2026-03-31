@@ -620,6 +620,7 @@ class YFinanceProvider:
                 interval=interval,
                 auto_adjust=auto_adjust,
                 actions=actions,
+                timeout=self.timeout,
                 progress=False,
                 threads=False,
                 keepna=True,
@@ -632,6 +633,7 @@ class YFinanceProvider:
                 interval=interval,
                 auto_adjust=auto_adjust,
                 actions=actions,
+                timeout=self.timeout,
                 progress=False,
                 threads=False,
             )
@@ -655,6 +657,7 @@ class YFinanceProvider:
                 interval=interval,
                 auto_adjust=auto_adjust,
                 actions=actions,
+                timeout=self.timeout,
                 progress=False,
                 threads=False,
                 keepna=True,
@@ -667,6 +670,7 @@ class YFinanceProvider:
                 interval=interval,
                 auto_adjust=auto_adjust,
                 actions=actions,
+                timeout=self.timeout,
                 progress=False,
                 threads=False,
             )

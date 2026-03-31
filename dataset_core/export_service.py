@@ -12,12 +12,13 @@ from dataset_core.logging_runtime import bind_runtime_logger, configure_run_logg
 from dataset_core.manifest_service import build_ticker_manifest
 from dataset_core.naming import (
     artifact_stem,
-    build_csv_filename,
+    build_csv_output_path,
     build_range_tag,
     build_run_directory,
     build_run_id,
     sanitize_symbol_for_csv,
 )
+from dataset_core.path_safety import assert_within_root
 from dataset_core.result_models import ArtifactPaths, TickerResult
 from dataset_core.sanitization_general import GeneralSanitizer
 from dataset_core.sanitization_qlib import QlibSanitizationError, QlibSanitizer
@@ -261,7 +262,7 @@ class DatasetExportService:
                     extras=request.extras,
                 )
                 neutral_notes.extend(general_schema.warnings)
-                artifacts.csv = run_dirs.csv_dir / build_csv_filename(resolved_ticker, request)
+                artifacts.csv = build_csv_output_path(run_dirs.csv_dir, resolved_ticker, request)
                 artifacts.canonical_csv = artifacts.csv
                 write_csv(general_schema.frame, artifacts.csv, temp_dir=run_dirs.temp_dir)
                 general_factor_policy = general_schema.factor_policy
@@ -281,7 +282,10 @@ class DatasetExportService:
             else:
                 stage = "schema_build"
                 runtime_logger.info("Persisting canonical dataset for Qlib mode.", extra={"stage": stage})
-                canonical_path = run_dirs.canonical_dir / self._canonical_csv_filename(resolved_ticker, request)
+                canonical_path = assert_within_root(
+                    run_dirs.canonical_dir / self._canonical_csv_filename(resolved_ticker, request),
+                    run_dirs.canonical_dir,
+                )
                 artifacts.canonical_csv = canonical_path
                 write_csv(general_result.frame, canonical_path, temp_dir=run_dirs.temp_dir)
                 primary_frame = general_result.frame
@@ -311,7 +315,8 @@ class DatasetExportService:
                     qlib_factor_policy = qlib_result.factor_policy
                     qlib_factor_source = qlib_result.factor_source
                     neutral_notes.extend(qlib_result.warnings)
-                    artifacts.qlib_csv = run_dirs.qlib_dir / build_csv_filename(
+                    artifacts.qlib_csv = build_csv_output_path(
+                        run_dirs.qlib_dir,
                         resolved_ticker,
                         request,
                         force_qlib_contract=True,
@@ -424,6 +429,7 @@ class DatasetExportService:
                 },
                 "status_resolution": {
                     "status": status_resolution.status,
+                    "validation_outcome": status_resolution.validation_outcome,
                     "reasons": list(status_resolution.reasons),
                     "neutral_notes": list(status_resolution.neutral_notes),
                 },
@@ -468,6 +474,7 @@ class DatasetExportService:
                 resolved_ticker=resolved_ticker,
                 status=status,
                 qlib_compatible=qlib_compatible,
+                validation_outcome=status_resolution.validation_outcome,
                 columns=list(primary_frame.columns),
                 status_reasons=status_resolution.reasons,
                 neutral_notes=status_resolution.neutral_notes,
@@ -488,7 +495,11 @@ class DatasetExportService:
                 runtime_logger,
                 ticker=resolved_ticker,
                 stage="ticker_finish",
-            ).info("Ticker export finished with status=%s.", status)
+            ).info(
+                "Ticker export finished with status=%s validation_outcome=%s.",
+                status,
+                status_resolution.validation_outcome,
+            )
             return result
 
         except Exception as exc:
@@ -516,6 +527,7 @@ class DatasetExportService:
                 resolved_ticker=resolved_ticker,
                 status="error",
                 qlib_compatible=False,
+                validation_outcome="failure",
                 columns=[],
                 status_reasons=list(errors),
                 neutral_notes=neutral_notes,
@@ -532,6 +544,7 @@ class DatasetExportService:
                 "run_id": run_dirs.run_id,
                 "ticker": requested_ticker,
                 "status": "error",
+                "validation_outcome": "failure",
                 "request": request.to_dict(),
                 "warnings": material_warnings,
                 "neutral_notes": neutral_notes,

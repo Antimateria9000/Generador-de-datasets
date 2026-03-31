@@ -55,7 +55,8 @@ def test_parallel_qlib_sanitization_writes_general_and_qlib_outputs(tmp_path, pa
     assert result.artifacts.csv != result.artifacts.qlib_csv
     assert result.qlib_compatible is True
     assert qlib_report["qlib_compatible"] is True
-    assert result.status == "success"
+    assert result.status == "warning"
+    assert result.validation_outcome == "success_partial_validation"
     assert result.artifacts.meta.exists()
 
 
@@ -133,6 +134,32 @@ def test_workspace_inventory_reconstructs_runs_without_batch_manifest(tmp_path, 
     assert record.preset == "base"
     assert record.interval == "1d"
     assert record.tickers == ["MSFT"]
-    assert record.overall_status == "success"
+    assert record.overall_status == "warning"
     assert record.orphaned is False
     assert record.metadata_source == "reconstructed"
+
+
+def test_filename_override_cannot_escape_workspace_on_real_run(tmp_path, patch_market_context):
+    workspace_root = tmp_path / "workspace"
+    outside_target = tmp_path / "escape_.csv"
+    outside_target.write_text("sentinel", encoding="utf-8")
+
+    export_service = DatasetExportService(
+        acquisition_service=DummyAcquisitionService({"MSFT": make_provider_frame("MSFT")})
+    )
+    batch_result = BatchOrchestrator(export_service=export_service).run(
+        DatasetRequest(
+            tickers=["MSFT"],
+            time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+            output_dir=workspace_root,
+            dq_mode="off",
+            filename_override="..\\..\\escape?.csv",
+        )
+    )
+    result = batch_result.results[0]
+
+    assert result.artifacts.csv.exists()
+    assert result.artifacts.csv.name == "escape_.csv"
+    assert result.artifacts.csv.parent == batch_result.csv_dir.resolve()
+    assert workspace_root.resolve() in result.artifacts.csv.resolve().parents
+    assert outside_target.read_text(encoding="utf-8") == "sentinel"

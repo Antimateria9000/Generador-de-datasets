@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-_NEUTRAL_EXTERNAL_STATUSES = {None, "", "not_validated", "skipped"}
-_NEUTRAL_INTERNAL_STATUSES = {None, "", "passed", "passed_with_warnings", "skipped", "unsupported"}
+_PARTIAL_EXTERNAL_STATUSES = {None, "", "not_validated", "skipped"}
+_PARTIAL_INTERNAL_STATUSES = {None, "", "passed_with_warnings", "skipped", "unsupported"}
 _EXTERNAL_STATUS_MESSAGES = {
     "adapter_error": "External validation adapter failed.",
     "failed": "External validation reported blocking differences.",
@@ -20,6 +20,7 @@ class StatusResolution:
     status: str
     reasons: list[str] = field(default_factory=list)
     neutral_notes: list[str] = field(default_factory=list)
+    validation_outcome: str = "success_validated"
 
 
 def _unique(values: list[str]) -> list[str]:
@@ -40,6 +41,17 @@ def _clean_reason(value: str | None) -> str:
     return str(value).strip()
 
 
+def _prefix_reason(prefix: str, detail: str | None) -> str:
+    sentence = prefix.rstrip(".:;!, ") + "."
+    cleaned = _clean_reason(detail)
+    if not cleaned:
+        return sentence
+    lowered = cleaned.lower()
+    if prefix.lower() in lowered:
+        return cleaned
+    return f"{sentence} {cleaned}"
+
+
 def resolve_ticker_status(
     *,
     warnings: list[str] | tuple[str, ...],
@@ -54,11 +66,32 @@ def resolve_ticker_status(
 ) -> StatusResolution:
     reasons = _unique(list(warnings))
     neutral_messages = _unique(list(neutral_notes))
+    partial_validation = False
+    validation_failed = False
 
     normalized_internal = None if internal_validation_status is None else str(internal_validation_status).strip().lower()
     normalized_external = None if external_validation_status is None else str(external_validation_status).strip().lower()
 
-    if normalized_internal not in _NEUTRAL_INTERNAL_STATUSES:
+    if normalized_internal == "passed":
+        pass
+    elif normalized_internal in _PARTIAL_INTERNAL_STATUSES:
+        partial_validation = True
+        if normalized_internal == "passed_with_warnings":
+            reasons.append("Internal validation passed with warnings.")
+        elif normalized_internal == "skipped":
+            reasons.append(
+                _clean_reason(internal_validation_reason)
+                or "Internal validation was skipped."
+            )
+        elif normalized_internal == "unsupported":
+            reasons.append(
+                _clean_reason(internal_validation_reason)
+                or "Internal validation is not applicable for the requested dataset profile."
+            )
+        else:
+            reasons.append("Internal validation did not fully validate the dataset.")
+    else:
+        validation_failed = True
         reasons.append(
             _clean_reason(internal_validation_reason)
             or _INTERNAL_STATUS_MESSAGES.get(
@@ -66,24 +99,14 @@ def resolve_ticker_status(
                 f"Internal validation status is {internal_validation_status}.",
             )
         )
-    elif normalized_internal == "passed_with_warnings":
-        neutral_messages.append("Internal validation passed with non-blocking warnings.")
-    elif normalized_internal == "skipped":
-        neutral_messages.append("Internal validation was skipped by configuration.")
-    elif normalized_internal == "unsupported":
-        neutral_messages.append(
-            _clean_reason(internal_validation_reason)
-            or "Internal validation is not applicable for the requested dataset profile."
-        )
 
     if normalized_external == "passed":
         pass
-    elif normalized_external in _NEUTRAL_EXTERNAL_STATUSES:
-        neutral_messages.append(
-            _clean_reason(external_validation_reason)
-            or "External validation did not run."
-        )
+    elif normalized_external in _PARTIAL_EXTERNAL_STATUSES:
+        partial_validation = True
+        reasons.append(_prefix_reason("External validation did not run", external_validation_reason))
     else:
+        validation_failed = True
         reasons.append(
             _clean_reason(external_validation_reason)
             or _EXTERNAL_STATUS_MESSAGES.get(
@@ -93,13 +116,21 @@ def resolve_ticker_status(
         )
 
     if qlib_requested and not qlib_compatible:
+        validation_failed = True
         if qlib_errors:
             reasons.extend(str(item) for item in qlib_errors if str(item).strip())
         else:
             reasons.append("The requested Qlib artifact is not compatible.")
 
+    validation_outcome = "success_validated"
+    if validation_failed:
+        validation_outcome = "failure"
+    elif partial_validation:
+        validation_outcome = "success_partial_validation"
+
     return StatusResolution(
-        status="warning" if reasons else "success",
+        status="error" if validation_failed else ("warning" if reasons else "success"),
         reasons=_unique(reasons),
         neutral_notes=_unique(neutral_messages),
+        validation_outcome=validation_outcome,
     )

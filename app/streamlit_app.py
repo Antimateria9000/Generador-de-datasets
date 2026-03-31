@@ -237,6 +237,13 @@ def _render_results(batch_result) -> None:
     col1.metric("Success", counts.get("success", 0))
     col2.metric("Warning", counts.get("warning", 0))
     col3.metric("Error", counts.get("error", 0))
+    validation_counts = getattr(batch_result, "validation_outcome_counts", {})
+    st.caption(
+        "Validated success="
+        f"{validation_counts.get('success_validated', 0)} | "
+        f"Partial validation={validation_counts.get('success_partial_validation', 0)} | "
+        f"Validation failure={validation_counts.get('failure', 0)}"
+    )
 
     st.write(f"Output root: `{batch_result.output_root}`")
     st.write(f"CSV dir: `{batch_result.csv_dir}`")
@@ -251,6 +258,7 @@ def _render_results(batch_result) -> None:
             [
                 "ticker",
                 "status",
+                "validation_outcome",
                 "status_reasons",
                 "neutral_notes",
                 "qlib_compatible",
@@ -272,6 +280,7 @@ def _render_results(batch_result) -> None:
             st.write(f"Requested ticker: `{result.requested_ticker}`")
             st.write(f"Resolved ticker: `{result.resolved_ticker}`")
             st.write(f"Provider symbol: `{result.provider_symbol}`")
+            st.write(f"Validation outcome: `{result.validation_outcome}`")
             if getattr(batch_result, "run_log_path", None):
                 st.write(f"Run log: `{batch_result.run_log_path}`")
             if result.status_reasons:

@@ -134,12 +134,16 @@ class _FakeExpander:
 class _FakeStreamlit:
     def __init__(self):
         self.calls = {
+            "captions": [],
             "success": [],
             "writes": [],
             "dataframes": [],
             "json": [],
             "expanders": [],
         }
+
+    def caption(self, value):
+        self.calls["captions"].append(value)
 
     def success(self, value):
         self.calls["success"].append(value)
@@ -198,6 +202,7 @@ def test_render_results_exposes_warnings_errors_provider_warnings_and_run_log(mo
     assert list(summary.columns) == [
         "ticker",
         "status",
+        "validation_outcome",
         "status_reasons",
         "neutral_notes",
         "qlib_compatible",
