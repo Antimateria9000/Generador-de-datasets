@@ -14,6 +14,7 @@ _CONTINUITY_REL_TOLERANCE = 0.25
 _DOUBLE_ADJUST_REL_TOLERANCE = 0.20
 _ADJ_CLOSE_WARNING_TOLERANCE = 5e-3
 _ADJ_CLOSE_ERROR_TOLERANCE = 2e-2
+OHLC_GEOMETRY_ABS_TOL = 1e-12
 
 
 @dataclass(frozen=True)
@@ -169,10 +170,31 @@ def validate_qlib_frame(
         high_values = numeric_data["high"]
         low_values = numeric_data["low"]
         close_values = numeric_data["close"]
-        bad_geometry = (high_values < pd.concat([open_values, close_values, low_values], axis=1).max(axis=1)) | (
-            low_values > pd.concat([open_values, close_values, high_values], axis=1).min(axis=1)
-        )
+        reference_max = pd.concat([open_values, close_values, low_values], axis=1).max(axis=1)
+        reference_min = pd.concat([open_values, close_values, high_values], axis=1).min(axis=1)
+        bad_high = high_values < (reference_max - OHLC_GEOMETRY_ABS_TOL)
+        bad_low = low_values > (reference_min + OHLC_GEOMETRY_ABS_TOL)
+        bad_geometry = bad_high | bad_low
         bad_geometry_count = int(bad_geometry.fillna(False).sum())
+        bad_geometry_examples: list[dict[str, object]] = []
+        if bad_geometry_count:
+            bad_rows = working.loc[
+                bad_geometry.fillna(False),
+                ["date", "open", "high", "low", "close"],
+            ].head(5)
+            for row in bad_rows.itertuples(index=False):
+                bad_geometry_examples.append(
+                    {
+                        "date": None if pd.isna(row.date) else pd.Timestamp(row.date).strftime("%Y-%m-%d"),
+                        "open": float(row.open),
+                        "high": float(row.high),
+                        "low": float(row.low),
+                        "close": float(row.close),
+                    }
+                )
+        metrics["bad_geometry_count"] = bad_geometry_count
+        if bad_geometry_examples:
+            metrics["bad_geometry_examples"] = bad_geometry_examples
         if bad_geometry_count:
             reasons.append("OHLC rows contain impossible high/low geometry.")
         _record_check(
@@ -182,6 +204,8 @@ def validate_qlib_frame(
             severity="blocking" if bad_geometry_count else "info",
             message="Validated intrarow OHLC geometry.",
             invalid_rows=bad_geometry_count,
+            abs_tolerance=OHLC_GEOMETRY_ABS_TOL,
+            examples=bad_geometry_examples,
         )
 
     if {"close", "factor"} <= numeric_data.keys() and not reasons:

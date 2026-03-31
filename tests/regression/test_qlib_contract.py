@@ -63,3 +63,37 @@ def test_batch_manifest_keeps_global_summary_and_paths(tmp_path, patch_market_co
     assert manifest["results"][0]["csv_path"]
     assert manifest["run_log_path"] == str(batch_result.run_log_path.resolve())
     assert manifest["results"][0]["status"] == "warning"
+
+
+def test_qlib_failure_does_not_advertise_missing_dq_artifact(tmp_path, patch_market_context):
+    invalid_frame = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-01-01"]),
+            "open": [10.0],
+            "high": [9.0],
+            "low": [8.0],
+            "close": [9.5],
+            "adj_close": [9.5],
+            "volume": [1_000.0],
+            "dividends": [0.0],
+            "stock_splits": [0.0],
+        }
+    )
+    export_service = DatasetExportService(
+        acquisition_service=DummyAcquisitionService({"MSFT": invalid_frame})
+    )
+    batch_result = BatchOrchestrator(export_service=export_service).run(
+        DatasetRequest(
+            tickers=["MSFT"],
+            time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+            output_dir=tmp_path,
+            mode="qlib",
+            dq_mode="off",
+        )
+    )
+    result = batch_result.results[0]
+    meta_payload = json.loads(result.artifacts.meta.read_text(encoding="utf-8"))
+
+    assert result.status == "error"
+    assert meta_payload["artifacts"]["dq_path"] is None
+    assert not (batch_result.report_dir / "MSFT.dq.json").exists()

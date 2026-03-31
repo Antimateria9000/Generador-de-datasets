@@ -55,6 +55,28 @@ class RunDirectories:
         return self.qlib_dir if request.mode == "qlib" else self.csv_dir
 
 
+def _existing_artifacts_only(artifacts: ArtifactPaths) -> ArtifactPaths:
+    return ArtifactPaths(
+        csv=artifacts.csv if artifacts.csv is not None and artifacts.csv.exists() else None,
+        canonical_csv=artifacts.canonical_csv
+        if artifacts.canonical_csv is not None and artifacts.canonical_csv.exists()
+        else None,
+        qlib_csv=artifacts.qlib_csv if artifacts.qlib_csv is not None and artifacts.qlib_csv.exists() else None,
+        meta=artifacts.meta,
+        dq=artifacts.dq if artifacts.dq is not None and artifacts.dq.exists() else None,
+        external_json=artifacts.external_json
+        if artifacts.external_json is not None and artifacts.external_json.exists()
+        else None,
+        external_txt=artifacts.external_txt
+        if artifacts.external_txt is not None and artifacts.external_txt.exists()
+        else None,
+        manifest=artifacts.manifest,
+        qlib_report=artifacts.qlib_report
+        if artifacts.qlib_report is not None and artifacts.qlib_report.exists()
+        else None,
+    )
+
+
 class DatasetExportService:
     def __init__(
         self,
@@ -507,6 +529,7 @@ class DatasetExportService:
             exception_type = type(exc).__name__
             error_summary = f"{stage}: {exception_type}: {exc}"
             errors.append(error_summary)
+            error_artifacts = _existing_artifacts_only(artifacts)
             error_context = {
                 "stage": stage,
                 "exception_type": exception_type,
@@ -537,7 +560,7 @@ class DatasetExportService:
                 provider_warnings=provider_warnings,
                 error_context=error_context,
                 run_log_path=run_dirs.run_log_path,
-                artifacts=artifacts,
+                artifacts=error_artifacts,
             )
             error_payload = {
                 "generated_at_utc": utc_now_iso(),
@@ -559,7 +582,7 @@ class DatasetExportService:
                 "exception_type": exception_type,
                 "message": str(exc),
                 "traceback_excerpt": error_context["traceback_excerpt"],
-                "artifacts": artifacts.to_dict(),
+                "artifacts": error_artifacts.to_dict(),
             }
             write_json(artifacts.manifest, build_ticker_manifest(result), temp_dir=run_dirs.temp_dir)
             write_json(artifacts.meta, error_payload, temp_dir=run_dirs.temp_dir)
