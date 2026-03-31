@@ -200,8 +200,36 @@ class ProviderConfig:
     max_intraday_lookback_days: Optional[int] = None
     cache_dir: Optional[Path] = None
     allow_partial_intraday: bool = False
+    metadata_candidate_limit: Optional[int] = None
+    context_cache_ttl_seconds: Optional[int] = None
+    batch_max_workers: Optional[int] = None
+    batch_chunk_size: Optional[int] = None
 
-    def to_kwargs(self) -> dict[str, object]:
+    def __post_init__(self) -> None:
+        if self.max_workers is not None and int(self.max_workers) < 1:
+            raise RequestContractError("provider.max_workers must be >= 1.")
+        if self.retries is not None and int(self.retries) < 1:
+            raise RequestContractError("provider.retries must be >= 1.")
+        if self.timeout is not None and float(self.timeout) <= 0:
+            raise RequestContractError("provider.timeout must be > 0.")
+        if self.metadata_timeout is not None and float(self.metadata_timeout) <= 0:
+            raise RequestContractError("provider.metadata_timeout must be > 0.")
+        if self.min_delay is not None and float(self.min_delay) < 0:
+            raise RequestContractError("provider.min_delay must be >= 0.")
+        if self.max_intraday_lookback_days is not None and int(self.max_intraday_lookback_days) < 1:
+            raise RequestContractError("provider.max_intraday_lookback_days must be >= 1.")
+        if self.metadata_candidate_limit is not None and int(self.metadata_candidate_limit) < 1:
+            raise RequestContractError("provider.metadata_candidate_limit must be >= 1.")
+        if self.context_cache_ttl_seconds is not None and int(self.context_cache_ttl_seconds) < 0:
+            raise RequestContractError("provider.context_cache_ttl_seconds must be >= 0.")
+        if self.batch_max_workers is not None and int(self.batch_max_workers) < 1:
+            raise RequestContractError("provider.batch_max_workers must be >= 1.")
+        if self.batch_chunk_size is not None and int(self.batch_chunk_size) < 1:
+            raise RequestContractError("provider.batch_chunk_size must be >= 1.")
+        if self.cache_dir is not None:
+            object.__setattr__(self, "cache_dir", Path(self.cache_dir).expanduser().resolve())
+
+    def to_runtime_kwargs(self) -> dict[str, object]:
         payload: dict[str, object] = {}
         if self.max_workers is not None:
             payload["max_workers"] = int(self.max_workers)
@@ -216,9 +244,24 @@ class ProviderConfig:
         if self.max_intraday_lookback_days is not None:
             payload["max_intraday_lookback_days"] = int(self.max_intraday_lookback_days)
         if self.cache_dir is not None:
-            payload["cache_dir"] = Path(self.cache_dir).expanduser().resolve()
+            payload["cache_dir"] = self.cache_dir
         if self.allow_partial_intraday:
             payload["allow_partial_intraday"] = True
+        return payload
+
+    def to_kwargs(self) -> dict[str, object]:
+        return self.to_runtime_kwargs()
+
+    def to_dict(self) -> dict[str, object]:
+        payload = self.to_runtime_kwargs()
+        if self.metadata_candidate_limit is not None:
+            payload["metadata_candidate_limit"] = int(self.metadata_candidate_limit)
+        if self.context_cache_ttl_seconds is not None:
+            payload["context_cache_ttl_seconds"] = int(self.context_cache_ttl_seconds)
+        if self.batch_max_workers is not None:
+            payload["batch_max_workers"] = int(self.batch_max_workers)
+        if self.batch_chunk_size is not None:
+            payload["batch_chunk_size"] = int(self.batch_chunk_size)
         return payload
 
 
@@ -307,6 +350,6 @@ class DatasetRequest:
             "years": self.time_range.years,
             "reproducible": self.time_range.reproducible,
         }
-        payload["provider"] = self.provider.to_kwargs()
+        payload["provider"] = self.provider.to_dict()
         payload["external_validation"] = self.external_validation.to_dict()
         return payload

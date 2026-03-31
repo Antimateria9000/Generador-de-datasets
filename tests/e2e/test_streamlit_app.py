@@ -66,6 +66,40 @@ def test_streamlit_helper_builds_request_for_qlib(monkeypatch, tmp_path):
     assert request.extras == ["factor"]
 
 
+def test_streamlit_helper_builds_request_with_runtime_controls(monkeypatch, tmp_path):
+    monkeypatch.setitem(streamlit_app.st.session_state, "extra_adj_close", False)
+    monkeypatch.setitem(streamlit_app.st.session_state, "extra_dividends", False)
+    monkeypatch.setitem(streamlit_app.st.session_state, "extra_stock_splits", False)
+    monkeypatch.setitem(streamlit_app.st.session_state, "extra_factor", False)
+
+    request = streamlit_app._build_request_from_form(
+        tickers_text="MSFT",
+        range_mode="Anos moviles",
+        start_date=None,
+        end_date=None,
+        years=5,
+        interval="1d",
+        mode="base",
+        listing_preference="exact_symbol",
+        dq_mode="report",
+        qlib_sanitization=False,
+        output_dir=str(tmp_path),
+        reference_dir="",
+        manual_events_file="",
+        provider_metadata_timeout="1.5",
+        provider_metadata_candidate_limit="2",
+        provider_context_cache_ttl_seconds="600",
+        provider_batch_max_workers="3",
+        provider_batch_chunk_size="2",
+    )
+
+    assert request.provider.metadata_timeout == 1.5
+    assert request.provider.metadata_candidate_limit == 2
+    assert request.provider.context_cache_ttl_seconds == 600
+    assert request.provider.batch_max_workers == 3
+    assert request.provider.batch_chunk_size == 2
+
+
 def test_streamlit_exact_range_helper_uses_shared_end_exclusive_policy():
     now_utc = streamlit_app.pd.Timestamp("2026-03-29T15:45:00")
 

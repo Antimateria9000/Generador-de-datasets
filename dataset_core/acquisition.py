@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Dict, Iterable, Tuple
 
+from dataset_core.settings import resolve_effective_cache_paths
 from providers.yfinance_provider import FetchResult, YFinanceProvider
 
 from dataset_core.contracts import DatasetRequest
@@ -14,6 +16,7 @@ class ProviderSession:
     provider: YFinanceProvider
     cache_dir: Path
     bundle_cache: Dict[Tuple[object, ...], Dict[str, FetchResult]] = field(default_factory=dict)
+    lock: Lock = field(default_factory=Lock, repr=False)
     metrics: dict[str, int] = field(
         default_factory=lambda: {
             "provider_instances": 1,
@@ -74,8 +77,9 @@ class AcquisitionService:
         )
 
     def _provider_kwargs(self, request: DatasetRequest) -> dict[str, object]:
-        provider_kwargs = request.provider.to_kwargs()
-        provider_kwargs.setdefault("cache_dir", request.output_dir / "cache" / "yfinance")
+        provider_kwargs = request.provider.to_runtime_kwargs()
+        cache_paths = resolve_effective_cache_paths(request.output_dir, request.provider.cache_dir)
+        provider_kwargs["cache_dir"] = cache_paths["yfinance"]
         return provider_kwargs
 
     def create_session(self, request: DatasetRequest) -> ProviderSession:
@@ -103,13 +107,16 @@ class AcquisitionService:
 
         active_session = session or self.create_session(request)
         cache_key = self._bundle_cache_key(normalized_symbols, request, auto_adjust, actions)
-        cached_bundle = active_session.bundle_cache.get(cache_key)
+        with active_session.lock:
+            cached_bundle = active_session.bundle_cache.get(cache_key)
         if cached_bundle is not None:
-            active_session.metrics["bundle_cache_hits"] += 1
+            with active_session.lock:
+                active_session.metrics["bundle_cache_hits"] += 1
             return {symbol: cached_bundle[symbol] for symbol in normalized_symbols}
 
-        active_session.metrics["bundle_cache_misses"] += 1
-        active_session.metrics["fetch_many_calls"] += 1
+        with active_session.lock:
+            active_session.metrics["bundle_cache_misses"] += 1
+            active_session.metrics["fetch_many_calls"] += 1
         result = active_session.provider.get_history_bundle(
             symbols=normalized_symbols,
             start=request.time_range.start,
@@ -128,7 +135,8 @@ class AcquisitionService:
             }
 
         if bundle:
-            active_session.bundle_cache[cache_key] = dict(bundle)
+            with active_session.lock:
+                active_session.bundle_cache[cache_key] = dict(bundle)
         return bundle
 
     def fetch(
@@ -141,7 +149,8 @@ class AcquisitionService:
         session: ProviderSession | None = None,
     ) -> FetchResult:
         active_session = session or self.create_session(request)
-        active_session.metrics["fetch_calls"] += 1
+        with active_session.lock:
+            active_session.metrics["fetch_calls"] += 1
         result = self.fetch_many(
             [symbol],
             request,

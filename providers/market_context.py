@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import asdict, dataclass, field
-from threading import Event, Thread
+from datetime import datetime, timezone
+from pathlib import Path
+from threading import Event, Lock, Thread
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yfinance as yf
+
+from dataset_core.serialization import write_json
+from dataset_core.settings import DEFAULT_CONTEXT_CACHE_TTL_SECONDS, DEFAULT_METADATA_CANDIDATE_LIMIT
 
 LOGGER_NAME = "AB3.MarketContext"
 logger = logging.getLogger(LOGGER_NAME)
@@ -509,6 +515,41 @@ def _ordered_unique(values: List[str], *, preserve_case: bool = False) -> List[s
     return ordered
 
 
+_CONTEXT_CACHE_VERSION = 1
+
+
+def _safe_symbol_cache_key(symbol: str) -> str:
+    normalized = str(symbol or "").strip().upper()
+    return re.sub(r"[^A-Z0-9._-]+", "_", normalized)
+
+
+def _cache_file_path(cache_dir: Path, symbol: str) -> Path:
+    return Path(cache_dir) / f"{_safe_symbol_cache_key(symbol)}.json"
+
+
+def _parse_cache_timestamp(raw: Any) -> datetime | None:
+    text = _normalize_text(raw)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _is_cache_expired(saved_at_utc: Any, ttl_seconds: int) -> bool:
+    if ttl_seconds <= 0:
+        return False
+    saved_at = _parse_cache_timestamp(saved_at_utc)
+    if saved_at is None:
+        return True
+    age_seconds = (datetime.now(timezone.utc) - saved_at).total_seconds()
+    return age_seconds > float(ttl_seconds)
+
+
 def _candidate_symbols(
     requested_symbol: str,
     listing_preference: str,
@@ -643,38 +684,140 @@ class ContextResolver:
         self,
         *,
         metadata_timeout: float | None = None,
-        candidate_limit: int = 4,
+        candidate_limit: int = DEFAULT_METADATA_CANDIDATE_LIMIT,
+        cache_dir: Path | None = None,
+        cache_ttl_seconds: int | None = DEFAULT_CONTEXT_CACHE_TTL_SECONDS,
     ) -> None:
         self.metadata_timeout = metadata_timeout
         self.candidate_limit = max(1, int(candidate_limit))
+        self.cache_dir = None if cache_dir is None else Path(cache_dir).expanduser().resolve()
+        self.cache_ttl_seconds = (
+            DEFAULT_CONTEXT_CACHE_TTL_SECONDS
+            if cache_ttl_seconds is None
+            else max(0, int(cache_ttl_seconds))
+        )
         self._snapshot_cache: Dict[str, Dict[str, Any]] = {}
+        self._cache_lock = Lock()
+        self._symbol_locks: Dict[str, Lock] = {}
+        if self.cache_dir is not None and self.cache_ttl_seconds != 0:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.metrics = {
             "cache_hits": 0,
             "cache_misses": 0,
             "metadata_queries": 0,
             "resolutions": 0,
+            "persistent_cache_hits": 0,
+            "persistent_cache_misses": 0,
+            "persistent_cache_writes": 0,
         }
+
+    def _increment_metric(self, key: str, amount: int = 1) -> None:
+        with self._cache_lock:
+            self.metrics[key] = int(self.metrics.get(key, 0)) + int(amount)
+
+    def _symbol_lock(self, symbol: str) -> Lock:
+        with self._cache_lock:
+            lock = self._symbol_locks.get(symbol)
+            if lock is None:
+                lock = Lock()
+                self._symbol_locks[symbol] = lock
+            return lock
+
+    @staticmethod
+    def _clone_snapshot(snapshot: Dict[str, Any], *, cache_source: str) -> Dict[str, Any]:
+        cloned = dict(snapshot)
+        query_trace = [dict(item) for item in cloned.get("query_trace", []) if isinstance(item, dict)]
+        if cache_source != "live":
+            query_trace = [{**item, "from_cache": True} for item in query_trace]
+        cloned["query_trace"] = query_trace
+        cloned["cache_hit"] = cache_source != "live"
+        cloned["cache_source"] = cache_source
+        return cloned
+
+    def _load_persistent_snapshot(self, symbol: str) -> Dict[str, Any] | None:
+        if self.cache_dir is None or self.cache_ttl_seconds == 0:
+            return None
+
+        cache_file = _cache_file_path(self.cache_dir, symbol)
+        if not cache_file.exists():
+            self._increment_metric("persistent_cache_misses")
+            return None
+
+        try:
+            payload = json.loads(cache_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.debug("Persistent context cache could not be read for %s: %s", symbol, exc)
+            self._increment_metric("persistent_cache_misses")
+            return None
+
+        if int(payload.get("version", 0) or 0) != _CONTEXT_CACHE_VERSION:
+            self._increment_metric("persistent_cache_misses")
+            return None
+        if _is_cache_expired(payload.get("saved_at_utc"), self.cache_ttl_seconds):
+            try:
+                cache_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._increment_metric("persistent_cache_misses")
+            return None
+
+        snapshot = payload.get("snapshot")
+        if not isinstance(snapshot, dict):
+            self._increment_metric("persistent_cache_misses")
+            return None
+
+        restored = dict(snapshot)
+        restored["symbol"] = str(restored.get("symbol") or symbol).strip().upper()
+        self._increment_metric("persistent_cache_hits")
+        return restored
+
+    def _store_persistent_snapshot(self, symbol: str, snapshot: Dict[str, Any]) -> None:
+        if self.cache_dir is None or self.cache_ttl_seconds == 0:
+            return
+
+        cache_file = _cache_file_path(self.cache_dir, symbol)
+        payload = {
+            "version": _CONTEXT_CACHE_VERSION,
+            "saved_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "symbol": str(symbol or "").strip().upper(),
+            "snapshot": dict(snapshot),
+        }
+        try:
+            write_json(cache_file, payload, temp_dir=self.cache_dir)
+        except Exception as exc:
+            logger.debug("Persistent context cache could not be written for %s: %s", symbol, exc)
+            return
+        self._increment_metric("persistent_cache_writes")
 
     def _load_snapshot(self, symbol: str) -> Dict[str, Any]:
         normalized_symbol = str(symbol or "").strip().upper()
-        cached = self._snapshot_cache.get(normalized_symbol)
+        with self._cache_lock:
+            cached = self._snapshot_cache.get(normalized_symbol)
         if cached is not None:
-            self.metrics["cache_hits"] += 1
-            snapshot = dict(cached)
-            snapshot["cache_hit"] = True
-            snapshot["query_trace"] = [
-                {**dict(item), "from_cache": True}
-                for item in snapshot.get("query_trace", [])
-                if isinstance(item, dict)
-            ]
-            return snapshot
+            self._increment_metric("cache_hits")
+            return self._clone_snapshot(cached, cache_source="memory")
 
-        snapshot = dict(_snapshot_symbol(normalized_symbol, metadata_timeout=self.metadata_timeout))
-        snapshot["cache_hit"] = False
-        self._snapshot_cache[normalized_symbol] = dict(snapshot)
-        self.metrics["cache_misses"] += 1
-        self.metrics["metadata_queries"] += len(snapshot.get("query_trace", []))
-        return snapshot
+        symbol_lock = self._symbol_lock(normalized_symbol)
+        with symbol_lock:
+            with self._cache_lock:
+                cached = self._snapshot_cache.get(normalized_symbol)
+            if cached is not None:
+                self._increment_metric("cache_hits")
+                return self._clone_snapshot(cached, cache_source="memory")
+
+            self._increment_metric("cache_misses")
+            persistent_snapshot = self._load_persistent_snapshot(normalized_symbol)
+            if persistent_snapshot is not None:
+                with self._cache_lock:
+                    self._snapshot_cache[normalized_symbol] = dict(persistent_snapshot)
+                return self._clone_snapshot(persistent_snapshot, cache_source="persistent")
+
+            snapshot = dict(_snapshot_symbol(normalized_symbol, metadata_timeout=self.metadata_timeout))
+            with self._cache_lock:
+                self._snapshot_cache[normalized_symbol] = dict(snapshot)
+                self.metrics["metadata_queries"] += len(snapshot.get("query_trace", []))
+            self._store_persistent_snapshot(normalized_symbol, snapshot)
+            return self._clone_snapshot(snapshot, cache_source="live")
 
     def resolve(
         self,
@@ -724,6 +867,7 @@ class ContextResolver:
                     "selected": str(snapshot.get("symbol") or "").upper()
                     == str(chosen_snapshot.get("symbol") or "").upper(),
                     "cache_hit": bool(snapshot.get("cache_hit")),
+                    "cache_source": str(snapshot.get("cache_source") or "live"),
                     "metadata_present": bool(snapshot.get("metadata_present")),
                     "query_trace": list(snapshot.get("query_trace", [])),
                 }
@@ -748,7 +892,7 @@ class ContextResolver:
             "requested": base_snapshot.get("raw_metadata", {}),
             "preferred": chosen_snapshot.get("raw_metadata", {}),
         }
-        self.metrics["resolutions"] += 1
+        self._increment_metric("resolutions")
         resolver_metrics = {
             "metadata_timeout": self.metadata_timeout,
             "candidate_limit": self.candidate_limit,
@@ -757,6 +901,11 @@ class ContextResolver:
             "cache_misses": self.metrics["cache_misses"],
             "metadata_queries": self.metrics["metadata_queries"],
             "resolutions": self.metrics["resolutions"],
+            "cache_ttl_seconds": self.cache_ttl_seconds,
+            "persistent_cache_enabled": bool(self.cache_dir) and self.cache_ttl_seconds != 0,
+            "persistent_cache_hits": self.metrics["persistent_cache_hits"],
+            "persistent_cache_misses": self.metrics["persistent_cache_misses"],
+            "persistent_cache_writes": self.metrics["persistent_cache_writes"],
         }
 
         return InstrumentContext(
@@ -795,11 +944,15 @@ def resolve_instrument_context(
     listing_preference: str = "exact_symbol",
     metadata_timeout: float | None = None,
     resolver: ContextResolver | None = None,
-    candidate_limit: int = 4,
+    candidate_limit: int = DEFAULT_METADATA_CANDIDATE_LIMIT,
+    cache_dir: Path | None = None,
+    cache_ttl_seconds: int | None = DEFAULT_CONTEXT_CACHE_TTL_SECONDS,
 ) -> InstrumentContext:
     active_resolver = resolver or ContextResolver(
         metadata_timeout=metadata_timeout,
         candidate_limit=candidate_limit,
+        cache_dir=cache_dir,
+        cache_ttl_seconds=cache_ttl_seconds,
     )
     return active_resolver.resolve(
         symbol,

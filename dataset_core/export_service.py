@@ -23,7 +23,13 @@ from dataset_core.sanitization_general import GeneralSanitizer
 from dataset_core.sanitization_qlib import QlibSanitizationError, QlibSanitizer
 from dataset_core.schema_builder import DatasetSchemaBuilder
 from dataset_core.serialization import compute_sha256, write_csv, write_json, write_text
-from dataset_core.settings import ensure_directory, ensure_workspace_tree, utc_now_iso
+from dataset_core.settings import (
+    DEFAULT_METADATA_CANDIDATE_LIMIT,
+    ensure_directory,
+    ensure_workspace_tree,
+    resolve_effective_cache_paths,
+    utc_now_iso,
+)
 from dataset_core.status_resolution import resolve_ticker_status
 from dataset_core.validation_external import ExternalValidationService
 from dataset_core.validation_internal import InternalDQService
@@ -73,12 +79,16 @@ class DatasetExportService:
         context_resolver: ContextResolver | None = None,
     ):
         market_override = None if request.dq_market == "AUTO" else request.dq_market
+        cache_paths = resolve_effective_cache_paths(request.output_dir, request.provider.cache_dir)
         return resolve_instrument_context(
             symbol=str(ticker or "").strip().upper(),
             market_override=market_override,
             listing_preference=request.listing_preference,
             metadata_timeout=request.provider.metadata_timeout or request.provider.timeout,
             resolver=context_resolver,
+            candidate_limit=request.provider.metadata_candidate_limit or DEFAULT_METADATA_CANDIDATE_LIMIT,
+            cache_dir=cache_paths["market_context"],
+            cache_ttl_seconds=request.provider.context_cache_ttl_seconds,
         )
 
     def prepare_run_directories(self, request: DatasetRequest) -> RunDirectories:

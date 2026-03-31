@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from threading import Lock, get_ident
 from types import SimpleNamespace
 
 import pandas as pd
@@ -116,11 +117,15 @@ class DummyAcquisitionService:
     def __init__(self, datasets: dict[str, pd.DataFrame | Exception]) -> None:
         self.datasets = {key.upper(): value for key, value in datasets.items()}
         self.last_session = None
+        self._lock = Lock()
+        self.fetch_many_inputs: list[tuple[str, ...]] = []
+        self.fetch_many_thread_ids: set[int] = set()
 
     def create_session(self, request):
         session = SimpleNamespace(
             request=request,
             bundle_cache={},
+            lock=self._lock,
             metrics={
                 "provider_instances": 1,
                 "fetch_calls": 0,
@@ -147,6 +152,9 @@ class DummyAcquisitionService:
     def fetch_many(self, symbols, request, auto_adjust, actions, *, session=None):
         active_session = session or self.create_session(request)
         normalized_symbols = self._normalize_symbols(symbols)
+        with self._lock:
+            self.fetch_many_inputs.append(tuple(normalized_symbols))
+            self.fetch_many_thread_ids.add(get_ident())
         cache_key = (
             tuple(normalized_symbols),
             request.interval,
@@ -155,13 +163,16 @@ class DummyAcquisitionService:
             bool(auto_adjust),
             bool(actions),
         )
-        cached = active_session.bundle_cache.get(cache_key)
+        with self._lock:
+            cached = active_session.bundle_cache.get(cache_key)
         if cached is not None:
-            active_session.metrics["bundle_cache_hits"] += 1
+            with self._lock:
+                active_session.metrics["bundle_cache_hits"] += 1
             return {symbol: cached[symbol] for symbol in normalized_symbols}
 
-        active_session.metrics["bundle_cache_misses"] += 1
-        active_session.metrics["fetch_many_calls"] += 1
+        with self._lock:
+            active_session.metrics["bundle_cache_misses"] += 1
+            active_session.metrics["fetch_many_calls"] += 1
         bundle = {}
         for symbol in normalized_symbols:
             value = self.datasets.get(symbol)
@@ -171,12 +182,14 @@ class DummyAcquisitionService:
                 raise value
             bundle[symbol] = make_fetch_result(symbol, value)
 
-        active_session.bundle_cache[cache_key] = dict(bundle)
+        with self._lock:
+            active_session.bundle_cache[cache_key] = dict(bundle)
         return bundle
 
     def fetch(self, symbol, request, auto_adjust, actions, *, session=None):
         active_session = session or self.create_session(request)
-        active_session.metrics["fetch_calls"] += 1
+        with self._lock:
+            active_session.metrics["fetch_calls"] += 1
         return self.fetch_many([symbol], request, auto_adjust, actions, session=active_session)[symbol.upper()]
 
 

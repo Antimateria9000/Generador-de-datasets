@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 from dataset_core.batch_orchestrator import BatchOrchestrator
-from dataset_core.contracts import DatasetRequest, TemporalRange
+from dataset_core.contracts import DatasetRequest, ProviderConfig, TemporalRange
 from dataset_core.export_service import DatasetExportService
 from tests.fixtures.sample_data import DummyAcquisitionService, FakeContext, make_provider_frame
 
@@ -253,3 +255,81 @@ def test_batch_orchestrator_keeps_logical_equivalence_between_sequential_and_con
     assert sequential_service.acquisition_service.last_session.metrics["fetch_calls"] == 3
     assert concurrent_service.acquisition_service.last_session.metrics["fetch_calls"] == 0
     assert concurrent_service.acquisition_service.last_session.metrics["fetch_many_calls"] == 1
+
+
+def test_batch_orchestrator_runs_planning_and_finalization_concurrently(tmp_path, patch_market_context, monkeypatch):
+    datasets = {
+        "MSFT": make_provider_frame("MSFT"),
+        "AAPL": make_provider_frame("AAPL"),
+        "NVDA": make_provider_frame("NVDA"),
+        "AMZN": make_provider_frame("AMZN"),
+    }
+    export_service = DatasetExportService(acquisition_service=DummyAcquisitionService(datasets))
+    orchestrator = BatchOrchestrator(export_service=export_service)
+    request = DatasetRequest(
+        tickers=["MSFT", "AAPL", "NVDA", "AMZN"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        output_dir=tmp_path,
+        dq_mode="off",
+        provider=ProviderConfig(batch_max_workers=3, batch_chunk_size=2),
+    )
+
+    planning_threads: set[int] = set()
+    export_threads: set[int] = set()
+    planning_lock = threading.Lock()
+    export_lock = threading.Lock()
+    original_resolve_context = export_service.resolve_context
+    original_export_ticker = export_service.export_ticker
+
+    def _resolve_context(*args, **kwargs):
+        time.sleep(0.03)
+        with planning_lock:
+            planning_threads.add(threading.get_ident())
+        return original_resolve_context(*args, **kwargs)
+
+    def _export_ticker(*args, **kwargs):
+        time.sleep(0.03)
+        with export_lock:
+            export_threads.add(threading.get_ident())
+        return original_export_ticker(*args, **kwargs)
+
+    monkeypatch.setattr(export_service, "resolve_context", _resolve_context)
+    monkeypatch.setattr(export_service, "export_ticker", _export_ticker)
+
+    batch_result = orchestrator.run(request, execution_mode="concurrent")
+
+    assert batch_result.status_counts["error"] == 0
+    assert len(planning_threads) > 1
+    assert len(export_threads) > 1
+
+
+def test_batch_orchestrator_chunks_grouped_acquisition_requests(tmp_path, patch_market_context):
+    datasets = {
+        "MSFT": make_provider_frame("MSFT"),
+        "AAPL": make_provider_frame("AAPL"),
+        "NVDA": make_provider_frame("NVDA"),
+        "AMZN": make_provider_frame("AMZN"),
+        "META": make_provider_frame("META"),
+    }
+    acquisition_service = DummyAcquisitionService(datasets)
+    export_service = DatasetExportService(acquisition_service=acquisition_service)
+    request = DatasetRequest(
+        tickers=["MSFT", "AAPL", "NVDA", "AMZN", "META"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        output_dir=tmp_path,
+        dq_mode="off",
+        provider=ProviderConfig(batch_max_workers=3, batch_chunk_size=2),
+    )
+
+    batch_result = BatchOrchestrator(export_service=export_service).run(
+        request,
+        execution_mode="concurrent",
+    )
+
+    assert batch_result.status_counts["error"] == 0
+    assert len(acquisition_service.fetch_many_inputs) == 3
+    assert set(acquisition_service.fetch_many_inputs) == {
+        ("MSFT", "AAPL"),
+        ("NVDA", "AMZN"),
+        ("META",),
+    }

@@ -76,6 +76,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider-max-workers", default=None, type=int, help="Override provider max_workers.")
     parser.add_argument("--provider-retries", default=None, type=int, help="Override provider retries.")
     parser.add_argument("--provider-timeout", default=None, type=float, help="Override provider timeout in seconds.")
+    parser.add_argument(
+        "--provider-metadata-timeout",
+        default=None,
+        type=float,
+        help="Override metadata/context timeout in seconds.",
+    )
+    parser.add_argument(
+        "--provider-metadata-candidate-limit",
+        default=None,
+        type=int,
+        help="Maximum metadata candidates to probe during context resolution.",
+    )
+    parser.add_argument(
+        "--provider-context-cache-ttl-seconds",
+        default=None,
+        type=int,
+        help="TTL for persistent market context cache. Use 0 to disable persistent context cache.",
+    )
+    parser.add_argument(
+        "--provider-batch-max-workers",
+        default=None,
+        type=int,
+        help="Maximum workers for concurrent batch planning/acquisition/finalization.",
+    )
+    parser.add_argument(
+        "--provider-batch-chunk-size",
+        default=None,
+        type=int,
+        help="Chunk size for grouped batch acquisition.",
+    )
     parser.add_argument("--provider-min-delay", default=None, type=float, help="Override provider minimum delay.")
     parser.add_argument(
         "--provider-max-intraday-lookback-days",
@@ -87,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--provider-allow-partial-intraday",
         action="store_true",
         help="Allow intraday truncation beyond the lookback window.",
+    )
+    parser.add_argument(
+        "--execution-mode",
+        default="concurrent",
+        choices=["concurrent", "sequential"],
+        help="Batch execution mode. Sequential remains available as a debugging fallback.",
     )
     parser.add_argument(
         "--log-level",
@@ -123,9 +159,14 @@ def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
         max_workers=args.provider_max_workers,
         retries=args.provider_retries,
         timeout=args.provider_timeout,
+        metadata_timeout=args.provider_metadata_timeout,
         min_delay=args.provider_min_delay,
         max_intraday_lookback_days=args.provider_max_intraday_lookback_days,
         allow_partial_intraday=args.provider_allow_partial_intraday,
+        metadata_candidate_limit=args.provider_metadata_candidate_limit,
+        context_cache_ttl_seconds=args.provider_context_cache_ttl_seconds,
+        batch_max_workers=args.provider_batch_max_workers,
+        batch_chunk_size=args.provider_batch_chunk_size,
     )
     external_validation = ExternalValidationConfig(
         reference_dir=None if not args.reference_dir else Path(args.reference_dir).expanduser().resolve(),
@@ -184,7 +225,7 @@ def run_cli(
     configure_logging(args.log_level)
     request = build_request_from_args(args)
     runner = orchestrator or BatchOrchestrator()
-    batch_result = runner.run(request)
+    batch_result = runner.run(request, execution_mode=args.execution_mode)
     summarize_batch(batch_result)
     return batch_result
 
@@ -210,9 +251,15 @@ def export_one_ticker(
     provider_max_workers: Optional[int] = None,
     provider_retries: Optional[int] = None,
     provider_timeout: Optional[float] = None,
+    provider_metadata_timeout: Optional[float] = None,
     provider_min_delay: Optional[float] = None,
     provider_max_intraday_lookback_days: Optional[int] = None,
     provider_allow_partial_intraday: bool = False,
+    provider_metadata_candidate_limit: Optional[int] = None,
+    provider_context_cache_ttl_seconds: Optional[int] = None,
+    provider_batch_max_workers: Optional[int] = None,
+    provider_batch_chunk_size: Optional[int] = None,
+    execution_mode: str = "concurrent",
 ) -> Path:
     request = DatasetRequest(
         tickers=[ticker],
@@ -237,9 +284,14 @@ def export_one_ticker(
             max_workers=provider_max_workers,
             retries=provider_retries,
             timeout=provider_timeout,
+            metadata_timeout=provider_metadata_timeout,
             min_delay=provider_min_delay,
             max_intraday_lookback_days=provider_max_intraday_lookback_days,
             allow_partial_intraday=provider_allow_partial_intraday,
+            metadata_candidate_limit=provider_metadata_candidate_limit,
+            context_cache_ttl_seconds=provider_context_cache_ttl_seconds,
+            batch_max_workers=provider_batch_max_workers,
+            batch_chunk_size=provider_batch_chunk_size,
         ),
         external_validation=ExternalValidationConfig(
             reference_dir=None if not reference_dir else Path(reference_dir).expanduser().resolve(),
@@ -248,7 +300,7 @@ def export_one_ticker(
             else Path(manual_events_file).expanduser().resolve(),
         ),
     )
-    result = BatchOrchestrator().run(request).results[0]
+    result = BatchOrchestrator().run(request, execution_mode=execution_mode).results[0]
     if result.artifacts.csv is None:
         raise RuntimeError(f"Ticker export failed: {' | '.join(result.errors)}")
     return result.artifacts.csv

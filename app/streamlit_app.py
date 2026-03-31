@@ -67,6 +67,11 @@ def _build_request_from_form(
     output_dir: str,
     reference_dir: str,
     manual_events_file: str,
+    provider_metadata_timeout: str = "",
+    provider_metadata_candidate_limit: str = "",
+    provider_context_cache_ttl_seconds: str = "",
+    provider_batch_max_workers: str = "",
+    provider_batch_chunk_size: str = "",
 ) -> DatasetRequest:
     extras: list[str] = []
     for extra in ("adj_close", "dividends", "stock_splits", "factor"):
@@ -89,6 +94,42 @@ def _build_request_from_form(
             interval=interval,
         )
 
+    def _parse_optional_positive_int(raw: str, label: str) -> int | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            value = int(text)
+        except ValueError as exc:
+            raise ValueError(f"{label} debe ser un entero positivo.") from exc
+        if value < 1:
+            raise ValueError(f"{label} debe ser >= 1.")
+        return value
+
+    def _parse_optional_non_negative_int(raw: str, label: str) -> int | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            value = int(text)
+        except ValueError as exc:
+            raise ValueError(f"{label} debe ser un entero mayor o igual que 0.") from exc
+        if value < 0:
+            raise ValueError(f"{label} debe ser >= 0.")
+        return value
+
+    def _parse_optional_positive_float(raw: str, label: str) -> float | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            value = float(text)
+        except ValueError as exc:
+            raise ValueError(f"{label} debe ser un numero positivo.") from exc
+        if value <= 0:
+            raise ValueError(f"{label} debe ser > 0.")
+        return value
+
     return DatasetRequest(
         tickers=tickers,
         time_range=time_range,
@@ -102,7 +143,28 @@ def _build_request_from_form(
         auto_adjust=False,
         actions=True,
         qlib_sanitization=qlib_sanitization or mode == "qlib",
-        provider=ProviderConfig(),
+        provider=ProviderConfig(
+            metadata_timeout=_parse_optional_positive_float(
+                provider_metadata_timeout,
+                "Metadata timeout",
+            ),
+            metadata_candidate_limit=_parse_optional_positive_int(
+                provider_metadata_candidate_limit,
+                "Metadata candidate limit",
+            ),
+            context_cache_ttl_seconds=_parse_optional_non_negative_int(
+                provider_context_cache_ttl_seconds,
+                "Context cache TTL",
+            ),
+            batch_max_workers=_parse_optional_positive_int(
+                provider_batch_max_workers,
+                "Batch max workers",
+            ),
+            batch_chunk_size=_parse_optional_positive_int(
+                provider_batch_chunk_size,
+                "Batch chunk size",
+            ),
+        ),
         external_validation=ExternalValidationConfig(
             reference_dir=None if not reference_dir.strip() else Path(reference_dir).expanduser().resolve(),
             manual_events_file=None
@@ -405,6 +467,42 @@ def main() -> None:
 
         output_dir = st.text_input("Workspace de salida", value=str(DEFAULT_OUTPUT_ROOT))
 
+        with st.expander("Runtime batch / contexto", expanded=False):
+            runtime_col_1, runtime_col_2, runtime_col_3 = st.columns(3)
+            with runtime_col_1:
+                execution_mode = st.selectbox(
+                    "Modo de ejecucion",
+                    ("concurrent", "sequential"),
+                    help="El modo secuencial sigue disponible como fallback de depuracion.",
+                )
+                provider_metadata_timeout = st.text_input(
+                    "Metadata timeout (s)",
+                    value="",
+                    help="Timeout explicito para lookups de metadata/contexto.",
+                )
+            with runtime_col_2:
+                provider_metadata_candidate_limit = st.text_input(
+                    "Metadata candidate limit",
+                    value="",
+                    help="Numero maximo de candidatos a probar por simbolo.",
+                )
+                provider_batch_max_workers = st.text_input(
+                    "Batch max workers",
+                    value="",
+                    help="Workers para planificacion, adquisicion y finalizacion concurrente.",
+                )
+            with runtime_col_3:
+                provider_context_cache_ttl_seconds = st.text_input(
+                    "Context cache TTL (s)",
+                    value="",
+                    help="TTL de la cache persistente de contexto. Usa 0 para desactivarla.",
+                )
+                provider_batch_chunk_size = st.text_input(
+                    "Batch chunk size",
+                    value="",
+                    help="Tamano del lote para adquisicion agrupada.",
+                )
+
         with st.expander("Validacion externa opcional"):
             reference_dir = st.text_input("Directorio con CSVs de referencia", value="")
             manual_events_file = st.text_input("Fichero de eventos manuales", value="")
@@ -428,9 +526,14 @@ def main() -> None:
                 output_dir=output_dir,
                 reference_dir=reference_dir,
                 manual_events_file=manual_events_file,
+                provider_metadata_timeout=provider_metadata_timeout,
+                provider_metadata_candidate_limit=provider_metadata_candidate_limit,
+                provider_context_cache_ttl_seconds=provider_context_cache_ttl_seconds,
+                provider_batch_max_workers=provider_batch_max_workers,
+                provider_batch_chunk_size=provider_batch_chunk_size,
             )
             with st.spinner("Generando dataset..."):
-                batch_result = get_orchestrator().run(request)
+                batch_result = get_orchestrator().run(request, execution_mode=execution_mode)
             st.session_state["last_batch_result"] = batch_result
         except Exception as exc:
             st.error(f"Generacion fallida: {exc}")

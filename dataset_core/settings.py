@@ -17,6 +17,8 @@ WORKSPACE_TEMP_DIR: Final[Path] = WORKSPACE_ROOT / "temp"
 WORKSPACE_LOGS_DIR: Final[Path] = WORKSPACE_ROOT / "logs"
 WORKSPACE_AUDITS_DIR: Final[Path] = WORKSPACE_ROOT / "audits"
 DEFAULT_OUTPUT_ROOT: Final[Path] = WORKSPACE_ROOT
+DEFAULT_METADATA_CANDIDATE_LIMIT: Final[int] = 4
+DEFAULT_CONTEXT_CACHE_TTL_SECONDS: Final[int] = 24 * 60 * 60
 
 SUPPORTED_INTERVALS: Final[tuple[str, ...]] = (
     "1m",
@@ -92,6 +94,27 @@ def resolve_workspace_tree(base_root: Path | None = None) -> dict[str, Path]:
         "temp": workspace_root / "temp",
         "logs": workspace_root / "logs",
         "audits": workspace_root / "audits",
+    }
+
+
+def resolve_effective_cache_paths(
+    base_root: Path | None = None,
+    provider_cache_dir: Path | None = None,
+) -> dict[str, Path]:
+    workspace = resolve_workspace_tree(base_root)
+    default_cache_root = workspace["cache"]
+
+    if provider_cache_dir is None:
+        cache_root = default_cache_root
+        yfinance_cache = cache_root / "yfinance"
+    else:
+        yfinance_cache = Path(provider_cache_dir).expanduser().resolve()
+        cache_root = yfinance_cache.parent if yfinance_cache.name.lower() == "yfinance" else yfinance_cache
+
+    return {
+        "cache_root": cache_root,
+        "yfinance": yfinance_cache,
+        "market_context": cache_root / "market_context",
     }
 
 
