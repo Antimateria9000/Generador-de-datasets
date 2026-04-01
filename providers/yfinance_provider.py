@@ -20,6 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 from uuid import uuid4
@@ -119,6 +120,12 @@ class DownloadFailureError(YFinanceProviderError):
     """Raised when all download strategies fail."""
 
 
+class FetchState(str, Enum):
+    SUCCESS = "success"
+    EMPTY = "empty"
+    FAILED = "failed"
+
+
 @dataclass
 class DownloadAttempt:
     attempt_number: int
@@ -158,6 +165,8 @@ class FetchMetadata:
     chunked: bool = False
     chunk_count: int = 0
     row_count: int = 0
+    fetch_state: FetchState = FetchState.SUCCESS
+    failure_kind: Optional[str] = None
     semantic_flags: Dict[str, object] = field(default_factory=dict)
     structured_warnings: List[Dict[str, object]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -165,6 +174,7 @@ class FetchMetadata:
 
     def to_dict(self) -> dict:
         payload = asdict(self)
+        payload["fetch_state"] = self.fetch_state.value
         payload["attempts"] = [attempt.to_dict() for attempt in self.attempts]
         return payload
 
@@ -174,6 +184,46 @@ class FetchResult:
     symbol: str
     data: pd.DataFrame
     metadata: FetchMetadata
+
+
+def _coerce_legacy_init_kwargs(
+    max_workers: int | dict[str, object],
+    retries: int,
+    timeout: float,
+    metadata_timeout: float | None,
+    min_delay: float,
+    max_intraday_lookback_days: int,
+    cache_dir: str | Path | None,
+    allow_partial_intraday: bool,
+) -> tuple[int, int, float, float | None, float, int, str | Path | None, bool]:
+    if not isinstance(max_workers, dict):
+        return (
+            int(max_workers),
+            retries,
+            timeout,
+            metadata_timeout,
+            min_delay,
+            max_intraday_lookback_days,
+            cache_dir,
+            allow_partial_intraday,
+        )
+
+    # Backward-compatibility shim for legacy callers that passed a config dict
+    # as the first positional argument. Keep it working, but do not extend it.
+    logger.debug(
+        "Legacy dict-based YFinanceProvider initialization is deprecated; pass keyword arguments instead."
+    )
+    params = dict(max_workers)
+    return (
+        int(params.get("max_workers", DEFAULT_MAX_WORKERS)),
+        int(params.get("retries", DEFAULT_RETRIES)),
+        float(params.get("timeout", DEFAULT_TIMEOUT)),
+        params.get("metadata_timeout"),
+        float(params.get("min_delay", DEFAULT_MIN_DELAY)),
+        int(params.get("max_intraday_lookback_days", DEFAULT_MAX_INTRADAY_LOOKBACK_DAYS)),
+        params.get("cache_dir"),
+        bool(params.get("allow_partial_intraday", False)),
+    )
 
 
 def _utcnow_iso() -> str:
@@ -496,7 +546,7 @@ class YFinanceProvider:
 
     def __init__(
         self,
-        max_workers: int = DEFAULT_MAX_WORKERS,
+        max_workers: int | dict[str, object] = DEFAULT_MAX_WORKERS,
         retries: int = DEFAULT_RETRIES,
         timeout: float = DEFAULT_TIMEOUT,
         metadata_timeout: float | None = None,
@@ -505,19 +555,25 @@ class YFinanceProvider:
         cache_dir: str | Path | None = None,
         allow_partial_intraday: bool = False,
     ) -> None:
-        if isinstance(max_workers, dict):
-            params = dict(max_workers)
-            max_workers = params.get("max_workers", DEFAULT_MAX_WORKERS)
-            retries = params.get("retries", DEFAULT_RETRIES)
-            timeout = params.get("timeout", DEFAULT_TIMEOUT)
-            metadata_timeout = params.get("metadata_timeout")
-            min_delay = params.get("min_delay", DEFAULT_MIN_DELAY)
-            max_intraday_lookback_days = params.get(
-                "max_intraday_lookback_days",
-                DEFAULT_MAX_INTRADAY_LOOKBACK_DAYS,
-            )
-            cache_dir = params.get("cache_dir")
-            allow_partial_intraday = params.get("allow_partial_intraday", False)
+        (
+            max_workers,
+            retries,
+            timeout,
+            metadata_timeout,
+            min_delay,
+            max_intraday_lookback_days,
+            cache_dir,
+            allow_partial_intraday,
+        ) = _coerce_legacy_init_kwargs(
+            max_workers,
+            retries,
+            timeout,
+            metadata_timeout,
+            min_delay,
+            max_intraday_lookback_days,
+            cache_dir,
+            allow_partial_intraday,
+        )
 
         self.max_workers = int(max_workers)
         self.retries = int(retries)
@@ -987,6 +1043,8 @@ class YFinanceProvider:
                     metadata.chunked = chunked
                     metadata.chunk_count = chunk_count
                     metadata.row_count = int(len(frame))
+                    metadata.fetch_state = FetchState.SUCCESS
+                    metadata.failure_kind = None
                     metadata.semantic_flags.update(_frame_semantic_flags(frame))
                     metadata.structured_warnings.extend(_frame_semantic_warnings(frame))
                     metadata.warnings.extend(
@@ -1066,6 +1124,8 @@ class YFinanceProvider:
             actions=actions,
             warnings=[f"Symbol failed during batch retrieval: {error}"],
         )
+        metadata.fetch_state = FetchState.FAILED
+        metadata.failure_kind = "batch_retrieval_failed"
         metadata.attempts.append(
             DownloadAttempt(
                 attempt_number=0,
@@ -1128,6 +1188,8 @@ class YFinanceProvider:
             )
         )
         if frame.empty:
+            metadata.fetch_state = FetchState.EMPTY
+            metadata.failure_kind = "empty_dataset"
             return FetchResult(symbol=symbol, data=_attach_metadata(_empty_export_frame(), metadata), metadata=metadata)
 
         actual_start, actual_end = _extract_actual_bounds(frame)
@@ -1137,6 +1199,8 @@ class YFinanceProvider:
         metadata.chunked = False
         metadata.chunk_count = 1
         metadata.row_count = int(len(frame))
+        metadata.fetch_state = FetchState.SUCCESS
+        metadata.failure_kind = None
         metadata.semantic_flags.update(_frame_semantic_flags(frame))
         metadata.structured_warnings.extend(_frame_semantic_warnings(frame))
         metadata.warnings.extend(

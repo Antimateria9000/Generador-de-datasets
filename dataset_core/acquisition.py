@@ -6,7 +6,7 @@ from threading import Lock
 from typing import Dict, Iterable, Tuple
 
 from dataset_core.settings import resolve_effective_cache_paths
-from providers.yfinance_provider import FetchResult, YFinanceProvider
+from providers.yfinance_provider import FetchResult, FetchState, YFinanceProvider
 
 from dataset_core.contracts import DatasetRequest
 
@@ -62,19 +62,28 @@ class AcquisitionService:
         )
 
     @staticmethod
-    def _is_failure_result(result: FetchResult) -> bool:
+    def _classify_fetch_result(result: FetchResult) -> str:
         metadata = getattr(result, "metadata", None)
-        warnings = list(getattr(metadata, "warnings", []) or [])
+        fetch_state = getattr(metadata, "fetch_state", None)
+        if isinstance(fetch_state, FetchState):
+            return fetch_state.value
+        normalized_state = str(fetch_state or "").strip().lower()
+        if normalized_state in {item.value for item in FetchState}:
+            return normalized_state
+
         attempts = list(getattr(metadata, "attempts", []) or [])
         backend_used = getattr(metadata, "backend_used", None)
         is_empty = getattr(result, "data", None) is None or result.data.empty
         attempted_and_failed = bool(attempts) and all(not getattr(item, "success", False) for item in attempts)
-        return bool(
-            is_empty
-            and backend_used is None
-            and attempted_and_failed
-            and any("Symbol failed during batch retrieval:" in str(warning) for warning in warnings)
-        )
+        if is_empty and backend_used in {None, "n/a"} and attempted_and_failed:
+            return FetchState.FAILED.value
+        if is_empty:
+            return FetchState.EMPTY.value
+        return FetchState.SUCCESS.value
+
+    @classmethod
+    def _is_failure_result(cls, result: FetchResult) -> bool:
+        return cls._classify_fetch_result(result) == FetchState.FAILED.value
 
     def _provider_kwargs(self, request: DatasetRequest) -> dict[str, object]:
         provider_kwargs = request.provider.to_runtime_kwargs()

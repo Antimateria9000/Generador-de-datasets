@@ -15,11 +15,6 @@ from dataset_core.workspace_inventory import WorkspaceRunRecord, filter_workspac
 _RUN_COMPONENT_KEYS = ("runs", "exports", "manifests", "reports", "temp", "logs")
 
 
-def _handle_remove_error(func, path, _exc_info) -> None:
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
-
-
 def _assert_within_workspace(workspace_root: Path, target: Path) -> None:
     resolved_root = workspace_root.resolve()
     resolved_target = target.resolve()

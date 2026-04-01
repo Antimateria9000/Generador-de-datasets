@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from dataset_core.contracts import DatasetRequest, ProviderConfig, TemporalRange
 from dataset_core.export_service import DatasetExportService
@@ -53,6 +54,13 @@ def test_resolve_instrument_context_reports_missing_metadata_without_network(mon
     assert context.asset_type == "equity"
     assert any("metadata de Yahoo" in warning for warning in context.warnings)
     assert any("quoteType" in warning for warning in context.warnings)
+    assert all("Ã" not in warning for warning in context.warnings)
+
+
+def test_market_context_source_file_does_not_contain_mojibake_markers():
+    content = Path("providers/market_context.py").read_text(encoding="utf-8")
+
+    assert "Ã" not in content
 
 
 def test_resolve_instrument_context_respects_metadata_timeout(monkeypatch):

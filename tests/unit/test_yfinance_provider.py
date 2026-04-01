@@ -5,7 +5,14 @@ from pandas.testing import assert_frame_equal
 
 from dataset_core.acquisition import AcquisitionService
 from dataset_core.contracts import DatasetRequest, TemporalRange
-from providers.yfinance_provider import YFinanceProvider, _clean_df
+from providers.yfinance_provider import (
+    DownloadAttempt,
+    FetchMetadata,
+    FetchResult,
+    FetchState,
+    YFinanceProvider,
+    _clean_df,
+)
 from tests.fixtures.sample_data import make_fetch_result, make_provider_frame
 
 
@@ -84,6 +91,159 @@ def test_acquisition_service_reuses_session_cache_for_repeated_fetch_many(tmp_pa
     assert session.metrics["bundle_cache_misses"] == 1
     assert session.metrics["bundle_cache_hits"] == 1
     assert session.metrics["provider_instances"] == 1
+
+
+def test_acquisition_service_classifies_fetch_results_with_structured_state():
+    base_metadata = dict(
+        provider_name="TestProvider",
+        provider_version="0.0.1",
+        source="unit-test",
+        request_id="req-1",
+        requested_symbol="MSFT",
+        resolved_symbol="MSFT",
+        requested_interval="1d",
+        resolved_interval="1d",
+        requested_start="2024-01-01T00:00:00",
+        requested_end="2024-01-02T00:00:00",
+        effective_start="2024-01-01T00:00:00",
+        effective_end="2024-01-02T00:00:00",
+        actual_start="2024-01-01T00:00:00",
+        actual_end="2024-01-02T00:00:00",
+        extracted_at_utc="2026-03-31T00:00:00+00:00",
+        auto_adjust=False,
+        actions=True,
+        warnings=[],
+    )
+
+    success = make_fetch_result("MSFT", make_provider_frame("MSFT"))
+    empty = FetchResult(
+        symbol="EMPTY",
+        data=make_provider_frame("EMPTY").iloc[0:0].copy(),
+        metadata=FetchMetadata(
+            **{
+                **base_metadata,
+                "requested_symbol": "EMPTY",
+                "resolved_symbol": "EMPTY",
+                "row_count": 0,
+                "backend_used": "download_many",
+                "fetch_state": FetchState.EMPTY,
+                "failure_kind": "empty_dataset",
+                "attempts": [
+                    DownloadAttempt(
+                        attempt_number=1,
+                        backend="download_many",
+                        interval="1d",
+                        start="2024-01-01T00:00:00",
+                        end="2024-01-02T00:00:00",
+                        duration_seconds=0.1,
+                        success=False,
+                        rows=0,
+                        error="empty dataframe",
+                    )
+                ],
+            },
+        ),
+    )
+    failed = FetchResult(
+        symbol="BAD",
+        data=make_provider_frame("BAD").iloc[0:0].copy(),
+        metadata=FetchMetadata(
+            **{
+                **base_metadata,
+                "requested_symbol": "BAD",
+                "resolved_symbol": "BAD",
+                "row_count": 0,
+                "fetch_state": FetchState.FAILED,
+                "failure_kind": "batch_retrieval_failed",
+                "warnings": ["provider returned a structured failure"],
+                "attempts": [
+                    DownloadAttempt(
+                        attempt_number=1,
+                        backend="n/a",
+                        interval="1d",
+                        start="2024-01-01T00:00:00",
+                        end="2024-01-02T00:00:00",
+                        duration_seconds=0.1,
+                        success=False,
+                        rows=0,
+                        error="boom",
+                    )
+                ],
+            },
+        ),
+    )
+
+    assert AcquisitionService._classify_fetch_result(success) == "success"
+    assert AcquisitionService._classify_fetch_result(empty) == "empty"
+    assert AcquisitionService._classify_fetch_result(failed) == "failed"
+    assert AcquisitionService._is_failure_result(failed) is True
+    assert AcquisitionService._is_failure_result(empty) is False
+
+
+def test_acquisition_service_does_not_depend_on_failure_warning_strings(tmp_path):
+    class _Provider:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def get_history_bundle(self, **kwargs):
+            return {
+                "MSFT": make_fetch_result("MSFT", make_provider_frame("MSFT")),
+                "BAD": FetchResult(
+                    symbol="BAD",
+                    data=make_provider_frame("BAD").iloc[0:0].copy(),
+                    metadata=FetchMetadata(
+                        provider_name="TestProvider",
+                        provider_version="0.0.1",
+                        source="unit-test",
+                        request_id="req-bad",
+                        requested_symbol="BAD",
+                        resolved_symbol="BAD",
+                        requested_interval="1d",
+                        resolved_interval="1d",
+                        requested_start="2024-01-01T00:00:00",
+                        requested_end="2024-01-02T00:00:00",
+                        effective_start="2024-01-01T00:00:00",
+                        effective_end="2024-01-02T00:00:00",
+                        actual_start=None,
+                        actual_end=None,
+                        extracted_at_utc="2026-03-31T00:00:00+00:00",
+                        auto_adjust=False,
+                        actions=True,
+                        row_count=0,
+                        fetch_state=FetchState.FAILED,
+                        failure_kind="batch_retrieval_failed",
+                        warnings=["human text changed and no longer contains the legacy marker"],
+                        attempts=[
+                            DownloadAttempt(
+                                attempt_number=1,
+                                backend="n/a",
+                                interval="1d",
+                                start="2024-01-01T00:00:00",
+                                end="2024-01-02T00:00:00",
+                                duration_seconds=0.1,
+                                success=False,
+                                rows=0,
+                                error="boom",
+                            )
+                        ],
+                    ),
+                ),
+            }
+
+    request = DatasetRequest(
+        tickers=["MSFT", "BAD"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        output_dir=tmp_path,
+    )
+
+    result = AcquisitionService(provider_factory=_Provider).fetch_many(
+        ["MSFT", "BAD"],
+        request,
+        auto_adjust=False,
+        actions=True,
+    )
+
+    assert list(result) == ["MSFT"]
 
 
 def test_fetch_many_matches_single_ticker_results_for_compatible_daily_batch(monkeypatch, tmp_path):
@@ -243,3 +403,22 @@ def test_download_timeout_is_preserved_across_retries(monkeypatch, tmp_path):
 
     assert result.metadata.backend_used == "download"
     assert download_timeouts == [4.5, 4.5]
+
+
+def test_yfinance_provider_keeps_legacy_dict_init_shim(tmp_path):
+    provider = YFinanceProvider(
+        {
+            "cache_dir": tmp_path / "cache",
+            "retries": 2,
+            "timeout": 3.5,
+            "metadata_timeout": 1.5,
+            "min_delay": 0.0,
+        }
+    )
+
+    info = provider.get_provider_info()
+
+    assert info["cache_dir"] == str((tmp_path / "cache").resolve())
+    assert info["retries"] == 2
+    assert info["timeout"] == 3.5
+    assert info["metadata_timeout"] == 1.5

@@ -693,9 +693,6 @@ class AB3DataQualitySuite:
                 },
             )
 
-    def _check_price_move_with_near_zero_vol(self, df: pd.DataFrame) -> None:
-        self._check_price_move_with_abnormal_low_vol(df)
-
     def _check_static_prices(self, df: pd.DataFrame) -> None:
         required = {"Open", "High", "Low", "Close"}
         if not required.issubset(df.columns):
@@ -754,7 +751,10 @@ class AB3DataQualitySuite:
 
         price_col = "Adj Close" if "Adj Close" in df.columns else "Close"
         price_series = pd.to_numeric(df[price_col], errors="coerce")
-        ratio = price_series.rolling(self.long_window).apply(lambda s: pd.Series(s).nunique() / max(len(s), 1), raw=False)
+        ratio = price_series.rolling(self.long_window).apply(
+            lambda s: s.nunique() / max(len(s), 1),
+            raw=False,
+        )
         few = ratio < self.unique_ratio_thr
         if few.any():
             self._push(
@@ -765,7 +765,10 @@ class AB3DataQualitySuite:
 
         if self.context.volume_expected and "Volume" in df.columns:
             volume = pd.to_numeric(df["Volume"], errors="coerce")
-            ratio_v = volume.rolling(self.long_window).apply(lambda s: pd.Series(s).nunique() / max(len(s), 1), raw=False)
+            ratio_v = volume.rolling(self.long_window).apply(
+                lambda s: s.nunique() / max(len(s), 1),
+                raw=False,
+            )
             few_v = ratio_v < self.unique_ratio_thr
             if few_v.any():
                 self._push(
@@ -945,6 +948,5 @@ class AB3DataQualitySuite:
         path = output_dir / f"{safe_symbol}_{first}_{last}.dq.json"
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         return str(path)
-
 
 

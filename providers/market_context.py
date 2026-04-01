@@ -876,13 +876,13 @@ class ContextResolver:
 
         if flags["calendar_validation_supported"] and not calendar:
             warnings.append(
-                "No se pudo inferir un calendario de mercado exacto; la DQ usarÃ¡ validaciÃ³n sin calendario oficial."
+                "No se pudo inferir un calendario de mercado exacto; la DQ usará validación sin calendario oficial."
             )
 
         if asset_type in {"equity", "etf"} and not timezone:
             warnings.append("No se pudo inferir la zona horaria del mercado.")
         if quote_type == "UNKNOWN":
-            warnings.append("quoteType no disponible; se asumiÃ³ perfil por heurÃ­stica.")
+            warnings.append("quoteType no disponible; se asumió perfil por heurística.")
 
         if not base_snapshot.get("metadata_present"):
             confidence = "low"
@@ -958,63 +958,6 @@ def resolve_instrument_context(
         symbol,
         market_override=market_override,
         listing_preference=listing_preference,
-    )
-
-
-    if flags["calendar_validation_supported"] and not calendar:
-        warnings.append(
-            "No se pudo inferir un calendario de mercado exacto; la DQ usará validación sin calendario oficial."
-        )
-
-    if asset_type in {"equity", "etf"} and not timezone:
-        warnings.append("No se pudo inferir la zona horaria del mercado.")
-    if quote_type == "UNKNOWN":
-        warnings.append("quoteType no disponible; se asumió perfil por heurística.")
-
-    if not base_snapshot.get("metadata_present"):
-        confidence = "low"
-        warnings.append("No se obtuvo metadata de Yahoo para enriquecer el contexto del instrumento.")
-
-    raw_metadata = {
-        "requested": base_snapshot.get("raw_metadata", {}),
-        "preferred": chosen_snapshot.get("raw_metadata", {}),
-    }
-    resolver_metrics = {
-        "metadata_timeout": metadata_timeout,
-        "metadata_queries": len(base_snapshot.get("query_trace", [])) + len(chosen_snapshot.get("query_trace", []))
-        if chosen_snapshot is not base_snapshot
-        else len(base_snapshot.get("query_trace", [])),
-        "cache_hits": 0,
-        "cache_misses": 0,
-    }
-
-    return InstrumentContext(
-        requested_symbol=normalized_symbol,
-        preferred_symbol=str(chosen_snapshot.get("symbol") or normalized_symbol),
-        resolved_symbol=str(chosen_snapshot.get("resolved_symbol") or normalized_symbol),
-        listing_preference=listing_preference,
-        quote_type=quote_type,
-        asset_type=asset_type,
-        asset_family=flags["asset_family"],
-        market=market,
-        calendar=calendar,
-        timezone=timezone,
-        currency=currency,
-        exchange_name=chosen_snapshot.get("exchange_name"),
-        exchange_code=chosen_snapshot.get("exchange_code"),
-        region=region,
-        is_24_7=bool(flags["is_24_7"]),
-        volume_expected=bool(flags["volume_expected"]),
-        corporate_actions_expected=bool(flags["corporate_actions_expected"]),
-        calendar_validation_supported=bool(flags["calendar_validation_supported"] and bool(calendar)),
-        dq_profile=str(flags["dq_profile"]),
-        confidence=confidence,
-        inference_sources=inference_sources,
-        warnings=warnings,
-        structured_warnings=structured_warnings,
-        resolution_trace=resolution_trace,
-        resolver_metrics=resolver_metrics,
-        raw_metadata=raw_metadata,
     )
 
 
