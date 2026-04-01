@@ -9,13 +9,25 @@ import streamlit as st
 from dataset_core import (
     BatchOrchestrator,
     DatasetRequest,
+    EODHDExternalValidationConfig,
     ExternalValidationConfig,
     ProviderConfig,
     TemporalRange,
     parse_tickers_text,
 )
 from dataset_core.presets import resolve_preset
-from dataset_core.settings import DEFAULT_OUTPUT_ROOT, DQ_MODES, LISTING_PREFERENCES, PRESET_NAMES, SUPPORTED_INTERVALS
+from dataset_core.settings import (
+    DEFAULT_EODHD_BACKOFF_SECONDS,
+    DEFAULT_EODHD_BASE_URL,
+    DEFAULT_EODHD_CACHE_TTL_SECONDS,
+    DEFAULT_EODHD_MAX_RETRIES,
+    DEFAULT_EODHD_TIMEOUT_SECONDS,
+    DEFAULT_OUTPUT_ROOT,
+    DQ_MODES,
+    LISTING_PREFERENCES,
+    PRESET_NAMES,
+    SUPPORTED_INTERVALS,
+)
 from dataset_core.workspace_inventory import filter_workspace_runs, list_workspace_runs
 
 PRESET_DEFAULTS = {
@@ -67,6 +79,17 @@ def _build_request_from_form(
     output_dir: str,
     reference_dir: str,
     manual_events_file: str,
+    external_validation_provider: str = "",
+    external_validation_enabled: bool = False,
+    eodhd_api_key: str = "",
+    eodhd_base_url: str = "",
+    eodhd_timeout_seconds: str = "",
+    eodhd_use_cache: bool = True,
+    eodhd_cache_dir: str = "",
+    eodhd_cache_ttl_seconds: str = "",
+    eodhd_allow_partial_coverage: bool = False,
+    eodhd_max_retries: str = "",
+    eodhd_backoff_seconds: str = "",
     provider_metadata_timeout: str = "",
     provider_metadata_candidate_limit: str = "",
     provider_context_cache_ttl_seconds: str = "",
@@ -166,10 +189,40 @@ def _build_request_from_form(
             ),
         ),
         external_validation=ExternalValidationConfig(
+            enabled=external_validation_enabled or None,
+            provider=None if not external_validation_provider.strip() else external_validation_provider.strip(),
             reference_dir=None if not reference_dir.strip() else Path(reference_dir).expanduser().resolve(),
             manual_events_file=None
             if not manual_events_file.strip()
             else Path(manual_events_file).expanduser().resolve(),
+            eodhd=EODHDExternalValidationConfig(
+                api_key=None if not eodhd_api_key.strip() else eodhd_api_key.strip(),
+                base_url=eodhd_base_url.strip() or DEFAULT_EODHD_BASE_URL,
+                timeout_seconds=_parse_optional_positive_float(
+                    eodhd_timeout_seconds,
+                    "EODHD timeout",
+                )
+                or DEFAULT_EODHD_TIMEOUT_SECONDS,
+                use_cache=bool(eodhd_use_cache),
+                cache_dir=None if not eodhd_cache_dir.strip() else Path(eodhd_cache_dir).expanduser().resolve(),
+                cache_ttl_seconds=_parse_optional_non_negative_int(
+                    eodhd_cache_ttl_seconds,
+                    "EODHD cache TTL",
+                )
+                if eodhd_cache_ttl_seconds.strip()
+                else DEFAULT_EODHD_CACHE_TTL_SECONDS,
+                allow_partial_coverage=bool(eodhd_allow_partial_coverage),
+                max_retries=_parse_optional_positive_int(
+                    eodhd_max_retries,
+                    "EODHD max retries",
+                )
+                or DEFAULT_EODHD_MAX_RETRIES,
+                backoff_seconds=_parse_optional_positive_float(
+                    eodhd_backoff_seconds,
+                    "EODHD backoff",
+                )
+                or DEFAULT_EODHD_BACKOFF_SECONDS,
+            ),
         ),
     )
 
@@ -513,8 +566,50 @@ def main() -> None:
                 )
 
         with st.expander("Validacion externa opcional"):
+            external_validation_enabled = st.checkbox(
+                "Activar validacion externa",
+                value=False,
+                help="Puedes seguir usando el modo legacy CSV/manual o seleccionar EODHD como fuente modular.",
+            )
+            external_validation_provider = st.selectbox(
+                "Provider de validacion",
+                ("", "csv", "eodhd"),
+                format_func=lambda value: "Legacy CSV/manual" if value in {"", "csv"} else "EODHD",
+            )
             reference_dir = st.text_input("Directorio con CSVs de referencia", value="")
             manual_events_file = st.text_input("Fichero de eventos manuales", value="")
+            if external_validation_provider == "eodhd":
+                eodhd_col_1, eodhd_col_2 = st.columns(2)
+                with eodhd_col_1:
+                    eodhd_api_key = st.text_input("EODHD API key", value="", type="password")
+                    eodhd_base_url = st.text_input("EODHD base URL", value=DEFAULT_EODHD_BASE_URL)
+                    eodhd_timeout_seconds = st.text_input("EODHD timeout (s)", value=str(DEFAULT_EODHD_TIMEOUT_SECONDS))
+                    eodhd_cache_ttl_seconds = st.text_input(
+                        "EODHD cache TTL (s)",
+                        value=str(DEFAULT_EODHD_CACHE_TTL_SECONDS),
+                    )
+                with eodhd_col_2:
+                    eodhd_use_cache = st.checkbox("Usar cache EODHD", value=True)
+                    eodhd_cache_dir = st.text_input("Directorio cache EODHD", value="")
+                    eodhd_max_retries = st.text_input("EODHD max retries", value=str(DEFAULT_EODHD_MAX_RETRIES))
+                    eodhd_backoff_seconds = st.text_input(
+                        "EODHD backoff (s)",
+                        value=str(DEFAULT_EODHD_BACKOFF_SECONDS),
+                    )
+                    eodhd_allow_partial_coverage = st.checkbox(
+                        "Permitir cobertura parcial en corporate actions",
+                        value=False,
+                    )
+            else:
+                eodhd_api_key = ""
+                eodhd_base_url = ""
+                eodhd_timeout_seconds = ""
+                eodhd_use_cache = True
+                eodhd_cache_dir = ""
+                eodhd_cache_ttl_seconds = ""
+                eodhd_allow_partial_coverage = False
+                eodhd_max_retries = ""
+                eodhd_backoff_seconds = ""
 
         _render_column_block(mode, qlib_sanitization)
         submitted = st.form_submit_button("Generar dataset", width="stretch")
@@ -535,6 +630,17 @@ def main() -> None:
                 output_dir=output_dir,
                 reference_dir=reference_dir,
                 manual_events_file=manual_events_file,
+                external_validation_provider=external_validation_provider,
+                external_validation_enabled=external_validation_enabled,
+                eodhd_api_key=eodhd_api_key,
+                eodhd_base_url=eodhd_base_url,
+                eodhd_timeout_seconds=eodhd_timeout_seconds,
+                eodhd_use_cache=eodhd_use_cache,
+                eodhd_cache_dir=eodhd_cache_dir,
+                eodhd_cache_ttl_seconds=eodhd_cache_ttl_seconds,
+                eodhd_allow_partial_coverage=eodhd_allow_partial_coverage,
+                eodhd_max_retries=eodhd_max_retries,
+                eodhd_backoff_seconds=eodhd_backoff_seconds,
                 provider_metadata_timeout=provider_metadata_timeout,
                 provider_metadata_candidate_limit=provider_metadata_candidate_limit,
                 provider_context_cache_ttl_seconds=provider_context_cache_ttl_seconds,

@@ -8,6 +8,7 @@ from typing import Optional, Sequence
 from dataset_core import (
     BatchOrchestrator,
     DatasetRequest,
+    EODHDExternalValidationConfig,
     ExternalValidationConfig,
     ProviderConfig,
     RequestContractError,
@@ -15,7 +16,18 @@ from dataset_core import (
     parse_extras,
     resolve_ticker_inputs,
 )
-from dataset_core.settings import DEFAULT_OUTPUT_ROOT, DQ_MODES, LISTING_PREFERENCES, PRESET_NAMES, SUPPORTED_INTERVALS
+from dataset_core.settings import (
+    DEFAULT_EODHD_BACKOFF_SECONDS,
+    DEFAULT_EODHD_BASE_URL,
+    DEFAULT_EODHD_CACHE_TTL_SECONDS,
+    DEFAULT_EODHD_MAX_RETRIES,
+    DEFAULT_EODHD_TIMEOUT_SECONDS,
+    DEFAULT_OUTPUT_ROOT,
+    DQ_MODES,
+    LISTING_PREFERENCES,
+    PRESET_NAMES,
+    SUPPORTED_INTERVALS,
+)
 
 LOGGER_NAME = "DatasetFactory.CLI"
 logger = logging.getLogger(LOGGER_NAME)
@@ -73,6 +85,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--reference-dir", default=None, type=str, help="Directory with reference CSVs for external validation.")
     parser.add_argument("--manual-events-file", default=None, type=str, help="CSV/JSON file with manual split events.")
+    parser.add_argument(
+        "--external-validation-provider",
+        default=None,
+        choices=["csv", "eodhd"],
+        help="External validation provider. Defaults to legacy CSV/manual mode when reference paths are supplied.",
+    )
+    parser.add_argument(
+        "--external-validation-enabled",
+        action="store_true",
+        help="Force external validation on. Useful together with --external-validation-provider=eodhd.",
+    )
+    parser.add_argument("--eodhd-api-key", default=None, type=str, help="EODHD API key for modular external validation.")
+    parser.add_argument("--eodhd-base-url", default=None, type=str, help="Override the EODHD API base URL.")
+    parser.add_argument(
+        "--eodhd-timeout-seconds",
+        default=None,
+        type=float,
+        help="Timeout for EODHD validation requests in seconds.",
+    )
+    parser.add_argument(
+        "--eodhd-no-cache",
+        action="store_true",
+        help="Disable the optional EODHD validation cache.",
+    )
+    parser.add_argument("--eodhd-cache-dir", default=None, type=str, help="Override EODHD validation cache directory.")
+    parser.add_argument(
+        "--eodhd-cache-ttl-seconds",
+        default=None,
+        type=int,
+        help="TTL for EODHD validation cache entries. Use 0 to disable cache reuse.",
+    )
+    parser.add_argument(
+        "--eodhd-allow-partial-coverage",
+        action="store_true",
+        help="Allow EODHD corporate actions validation to proceed when only dividends or splits are available.",
+    )
+    parser.add_argument("--eodhd-max-retries", default=None, type=int, help="Maximum EODHD retry attempts.")
+    parser.add_argument(
+        "--eodhd-backoff-seconds",
+        default=None,
+        type=float,
+        help="Base backoff in seconds for EODHD validation retries.",
+    )
     parser.add_argument("--provider-max-workers", default=None, type=int, help="Override provider max_workers.")
     parser.add_argument("--provider-retries", default=None, type=int, help="Override provider retries.")
     parser.add_argument("--provider-timeout", default=None, type=float, help="Override provider timeout in seconds.")
@@ -169,10 +224,25 @@ def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
         batch_chunk_size=args.provider_batch_chunk_size,
     )
     external_validation = ExternalValidationConfig(
+        enabled=True if args.external_validation_enabled else None,
+        provider=args.external_validation_provider,
         reference_dir=None if not args.reference_dir else Path(args.reference_dir).expanduser().resolve(),
         manual_events_file=None
         if not args.manual_events_file
         else Path(args.manual_events_file).expanduser().resolve(),
+        eodhd=EODHDExternalValidationConfig(
+            api_key=args.eodhd_api_key,
+            base_url=args.eodhd_base_url or DEFAULT_EODHD_BASE_URL,
+            timeout_seconds=args.eodhd_timeout_seconds or DEFAULT_EODHD_TIMEOUT_SECONDS,
+            use_cache=not bool(args.eodhd_no_cache),
+            cache_dir=None if not args.eodhd_cache_dir else Path(args.eodhd_cache_dir).expanduser().resolve(),
+            cache_ttl_seconds=DEFAULT_EODHD_CACHE_TTL_SECONDS
+            if args.eodhd_cache_ttl_seconds is None
+            else args.eodhd_cache_ttl_seconds,
+            allow_partial_coverage=bool(args.eodhd_allow_partial_coverage),
+            max_retries=args.eodhd_max_retries or DEFAULT_EODHD_MAX_RETRIES,
+            backoff_seconds=args.eodhd_backoff_seconds or DEFAULT_EODHD_BACKOFF_SECONDS,
+        ),
     )
 
     return DatasetRequest(
@@ -252,6 +322,17 @@ def export_one_ticker(
     qlib_sanitization: bool = False,
     reference_dir: Optional[str] = None,
     manual_events_file: Optional[str] = None,
+    external_validation_provider: Optional[str] = None,
+    external_validation_enabled: Optional[bool] = None,
+    eodhd_api_key: Optional[str] = None,
+    eodhd_base_url: Optional[str] = None,
+    eodhd_timeout_seconds: Optional[float] = None,
+    eodhd_use_cache: bool = True,
+    eodhd_cache_dir: Optional[str] = None,
+    eodhd_cache_ttl_seconds: Optional[int] = None,
+    eodhd_allow_partial_coverage: bool = False,
+    eodhd_max_retries: Optional[int] = None,
+    eodhd_backoff_seconds: Optional[float] = None,
     provider_max_workers: Optional[int] = None,
     provider_retries: Optional[int] = None,
     provider_timeout: Optional[float] = None,
@@ -298,10 +379,25 @@ def export_one_ticker(
             batch_chunk_size=provider_batch_chunk_size,
         ),
         external_validation=ExternalValidationConfig(
+            enabled=external_validation_enabled,
+            provider=external_validation_provider,
             reference_dir=None if not reference_dir else Path(reference_dir).expanduser().resolve(),
             manual_events_file=None
             if not manual_events_file
             else Path(manual_events_file).expanduser().resolve(),
+            eodhd=EODHDExternalValidationConfig(
+                api_key=eodhd_api_key,
+                base_url=eodhd_base_url or DEFAULT_EODHD_BASE_URL,
+                timeout_seconds=eodhd_timeout_seconds or DEFAULT_EODHD_TIMEOUT_SECONDS,
+                use_cache=bool(eodhd_use_cache),
+                cache_dir=None if not eodhd_cache_dir else Path(eodhd_cache_dir).expanduser().resolve(),
+                cache_ttl_seconds=DEFAULT_EODHD_CACHE_TTL_SECONDS
+                if eodhd_cache_ttl_seconds is None
+                else eodhd_cache_ttl_seconds,
+                allow_partial_coverage=bool(eodhd_allow_partial_coverage),
+                max_retries=eodhd_max_retries or DEFAULT_EODHD_MAX_RETRIES,
+                backoff_seconds=eodhd_backoff_seconds or DEFAULT_EODHD_BACKOFF_SECONDS,
+            ),
         ),
     )
     result = BatchOrchestrator().run(request, execution_mode=execution_mode).results[0]

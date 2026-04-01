@@ -100,6 +100,47 @@ def test_streamlit_helper_builds_request_with_runtime_controls(monkeypatch, tmp_
     assert request.provider.batch_chunk_size == 2
 
 
+def test_streamlit_helper_builds_request_with_eodhd_external_validation(monkeypatch, tmp_path):
+    monkeypatch.setitem(streamlit_app.st.session_state, "extra_adj_close", False)
+    monkeypatch.setitem(streamlit_app.st.session_state, "extra_dividends", False)
+    monkeypatch.setitem(streamlit_app.st.session_state, "extra_stock_splits", False)
+    monkeypatch.setitem(streamlit_app.st.session_state, "extra_factor", False)
+
+    request = streamlit_app._build_request_from_form(
+        tickers_text="MSFT",
+        range_mode="Anos moviles",
+        start_date=None,
+        end_date=None,
+        years=5,
+        interval="1d",
+        mode="base",
+        listing_preference="exact_symbol",
+        dq_mode="report",
+        qlib_sanitization=False,
+        output_dir=str(tmp_path),
+        reference_dir="",
+        manual_events_file="",
+        external_validation_provider="eodhd",
+        external_validation_enabled=True,
+        eodhd_api_key="secret",
+        eodhd_base_url="https://eodhd.com",
+        eodhd_timeout_seconds="4.5",
+        eodhd_use_cache=True,
+        eodhd_cache_dir="",
+        eodhd_cache_ttl_seconds="600",
+        eodhd_allow_partial_coverage=True,
+        eodhd_max_retries="3",
+        eodhd_backoff_seconds="0.75",
+    )
+
+    assert request.external_validation.is_enabled() is True
+    assert request.external_validation.resolved_provider() == "eodhd"
+    assert request.external_validation.eodhd.api_key == "secret"
+    assert request.external_validation.eodhd.timeout_seconds == 4.5
+    assert request.external_validation.eodhd.cache_ttl_seconds == 600
+    assert request.external_validation.eodhd.allow_partial_coverage is True
+
+
 def test_streamlit_exact_range_helper_uses_shared_end_exclusive_policy():
     now_utc = streamlit_app.pd.Timestamp("2026-03-29T15:45:00")
 

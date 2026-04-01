@@ -5,16 +5,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from uuid import uuid4
 
-from dataset_core.contracts import DatasetRequest, ExternalValidationConfig
+from dataset_core.contracts import DatasetRequest
+from dataset_core.external_sources.factory import build_external_validation_service
 from dataset_core.export_service import DatasetExportService
 from dataset_core.factor_policy import resolve_provider_flags
 from dataset_core.logging_runtime import bind_runtime_logger, close_run_logger, configure_run_logger
 from dataset_core.manifest_service import build_batch_manifest, render_batch_manifest_text
-from dataset_core.reference_adapters import CSVReferenceAdapter, ManualEventAdapter
 from dataset_core.result_models import BatchResult
 from dataset_core.serialization import cleanup_orphan_temp_files, write_json, write_text
 from dataset_core.settings import DEFAULT_METADATA_CANDIDATE_LIMIT, resolve_effective_cache_paths
-from dataset_core.validation_external import ExternalValidationService
 from providers.market_context import ContextResolver
 
 
@@ -41,18 +40,6 @@ class BatchRuntime:
 class BatchOrchestrator:
     def __init__(self, export_service: DatasetExportService | None = None) -> None:
         self.export_service = export_service or DatasetExportService()
-
-    def _external_validation_service(
-        self,
-        config: ExternalValidationConfig,
-    ) -> ExternalValidationService:
-        price_adapters = []
-        event_adapters = []
-        if config.reference_dir is not None:
-            price_adapters.append(CSVReferenceAdapter(config.reference_dir))
-        if config.manual_events_file is not None:
-            event_adapters.append(ManualEventAdapter(config.manual_events_file))
-        return ExternalValidationService(price_adapters=price_adapters, event_adapters=event_adapters)
 
     @staticmethod
     def _normalize_execution_mode(execution_mode: str) -> str:
@@ -392,14 +379,17 @@ class BatchOrchestrator:
     ) -> BatchResult:
         normalized_execution_mode = self._normalize_execution_mode(execution_mode)
         export_service = self.export_service
-        if request.external_validation.reference_dir or request.external_validation.manual_events_file:
+        if request.external_validation.is_enabled():
             export_service = DatasetExportService(
                 acquisition_service=export_service.acquisition_service,
                 schema_builder=export_service.schema_builder,
                 general_sanitizer=export_service.general_sanitizer,
                 qlib_sanitizer=export_service.qlib_sanitizer,
                 internal_validation=export_service.internal_validation,
-                external_validation=self._external_validation_service(request.external_validation),
+                external_validation=build_external_validation_service(
+                    request.external_validation,
+                    output_root=request.output_dir,
+                ),
             )
 
         run_dirs = export_service.prepare_run_directories(request)

@@ -6,3 +6,4 @@ pandas_market_calendars==5.3.1.2
 streamlit==1.55.0
 pydantic==2.12.5
 pyyaml==6.0.3
+requests==2.33.0

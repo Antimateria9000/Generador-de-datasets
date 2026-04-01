@@ -10,6 +10,11 @@ import pandas as pd
 from dataset_core.date_windows import DateWindowError, resolve_temporal_bounds
 from dataset_core.path_safety import normalize_filename_override
 from dataset_core.settings import (
+    DEFAULT_EODHD_BACKOFF_SECONDS,
+    DEFAULT_EODHD_BASE_URL,
+    DEFAULT_EODHD_CACHE_TTL_SECONDS,
+    DEFAULT_EODHD_MAX_RETRIES,
+    DEFAULT_EODHD_TIMEOUT_SECONDS,
     DEFAULT_OUTPUT_ROOT,
     DQ_MODES,
     LISTING_PREFERENCES,
@@ -267,16 +272,115 @@ class ProviderConfig:
 
 
 @dataclass(frozen=True)
+class EODHDExternalValidationConfig:
+    api_key: Optional[str] = None
+    base_url: str = DEFAULT_EODHD_BASE_URL
+    timeout_seconds: float = DEFAULT_EODHD_TIMEOUT_SECONDS
+    use_cache: bool = True
+    cache_dir: Optional[Path] = None
+    cache_ttl_seconds: int = DEFAULT_EODHD_CACHE_TTL_SECONDS
+    allow_partial_coverage: bool = False
+    max_retries: int = DEFAULT_EODHD_MAX_RETRIES
+    backoff_seconds: float = DEFAULT_EODHD_BACKOFF_SECONDS
+    exchange_hint: Optional[str] = None
+    symbol_map_file: Optional[Path] = None
+
+    def __post_init__(self) -> None:
+        api_key = None if self.api_key is None else str(self.api_key).strip()
+        if api_key == "":
+            api_key = None
+        object.__setattr__(self, "api_key", api_key)
+
+        base_url = str(self.base_url or DEFAULT_EODHD_BASE_URL).strip().rstrip("/")
+        if not base_url:
+            raise RequestContractError("external_validation.eodhd.base_url cannot be empty.")
+        object.__setattr__(self, "base_url", base_url)
+
+        if float(self.timeout_seconds) <= 0:
+            raise RequestContractError("external_validation.eodhd.timeout_seconds must be > 0.")
+        if int(self.cache_ttl_seconds) < 0:
+            raise RequestContractError("external_validation.eodhd.cache_ttl_seconds must be >= 0.")
+        if int(self.max_retries) < 1:
+            raise RequestContractError("external_validation.eodhd.max_retries must be >= 1.")
+        if float(self.backoff_seconds) < 0:
+            raise RequestContractError("external_validation.eodhd.backoff_seconds must be >= 0.")
+        if self.cache_dir is not None:
+            object.__setattr__(self, "cache_dir", Path(self.cache_dir).expanduser().resolve())
+        exchange_hint = None if self.exchange_hint is None else str(self.exchange_hint).strip().upper()
+        if exchange_hint == "":
+            exchange_hint = None
+        object.__setattr__(self, "exchange_hint", exchange_hint)
+        if self.symbol_map_file is not None:
+            object.__setattr__(self, "symbol_map_file", Path(self.symbol_map_file).expanduser().resolve())
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "api_key_configured": bool(self.api_key),
+            "base_url": self.base_url,
+            "timeout_seconds": float(self.timeout_seconds),
+            "use_cache": bool(self.use_cache),
+            "cache_dir": None if self.cache_dir is None else str(self.cache_dir.resolve()),
+            "cache_ttl_seconds": int(self.cache_ttl_seconds),
+            "allow_partial_coverage": bool(self.allow_partial_coverage),
+            "max_retries": int(self.max_retries),
+            "backoff_seconds": float(self.backoff_seconds),
+            "exchange_hint": self.exchange_hint,
+            "symbol_map_file": None
+            if self.symbol_map_file is None
+            else str(self.symbol_map_file.resolve()),
+        }
+
+
+@dataclass(frozen=True)
 class ExternalValidationConfig:
+    enabled: Optional[bool] = None
+    provider: Optional[str] = None
     reference_dir: Optional[Path] = None
     manual_events_file: Optional[Path] = None
+    eodhd: EODHDExternalValidationConfig = field(default_factory=EODHDExternalValidationConfig)
 
-    def to_dict(self) -> dict[str, Optional[str]]:
+    def __post_init__(self) -> None:
+        if self.reference_dir is not None:
+            object.__setattr__(self, "reference_dir", Path(self.reference_dir).expanduser().resolve())
+        if self.manual_events_file is not None:
+            object.__setattr__(self, "manual_events_file", Path(self.manual_events_file).expanduser().resolve())
+        if self.provider is not None:
+            normalized_provider = str(self.provider).strip().lower()
+            if normalized_provider not in {"csv", "eodhd"}:
+                raise RequestContractError(
+                    "external_validation.provider must be either 'csv' or 'eodhd'."
+                )
+            object.__setattr__(self, "provider", normalized_provider)
+        if self.enabled is not None:
+            object.__setattr__(self, "enabled", bool(self.enabled))
+
+    @property
+    def has_legacy_sources(self) -> bool:
+        return self.reference_dir is not None or self.manual_events_file is not None
+
+    def resolved_provider(self) -> str | None:
+        if self.provider:
+            return self.provider
+        if self.has_legacy_sources:
+            return "csv"
+        if self.eodhd.api_key:
+            return "eodhd"
+        return None
+
+    def is_enabled(self) -> bool:
+        if self.enabled is not None:
+            return bool(self.enabled)
+        return self.resolved_provider() is not None
+
+    def to_dict(self) -> dict[str, object]:
         return {
+            "enabled": self.is_enabled(),
+            "provider": self.resolved_provider(),
             "reference_dir": None if self.reference_dir is None else str(self.reference_dir.resolve()),
             "manual_events_file": None
             if self.manual_events_file is None
             else str(self.manual_events_file.resolve()),
+            "eodhd": self.eodhd.to_dict(),
         }
 
 

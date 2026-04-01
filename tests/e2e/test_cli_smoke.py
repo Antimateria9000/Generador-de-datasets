@@ -70,3 +70,41 @@ def test_cli_build_request_exposes_runtime_controls(tmp_path):
     assert request.provider.batch_max_workers == 3
     assert request.provider.batch_chunk_size == 2
     assert args.execution_mode == "sequential"
+
+
+def test_cli_build_request_supports_modular_eodhd_external_validation(tmp_path):
+    args = build_parser().parse_args(
+        [
+            "--ticker",
+            "MSFT",
+            "--years",
+            "5",
+            "--outdir",
+            str(tmp_path),
+            "--external-validation-enabled",
+            "--external-validation-provider",
+            "eodhd",
+            "--eodhd-api-key",
+            "secret",
+            "--eodhd-timeout-seconds",
+            "4.5",
+            "--eodhd-cache-ttl-seconds",
+            "600",
+            "--eodhd-max-retries",
+            "3",
+            "--eodhd-backoff-seconds",
+            "0.75",
+            "--eodhd-allow-partial-coverage",
+        ]
+    )
+
+    request = build_request_from_args(args)
+
+    assert request.external_validation.is_enabled() is True
+    assert request.external_validation.resolved_provider() == "eodhd"
+    assert request.external_validation.eodhd.api_key == "secret"
+    assert request.external_validation.eodhd.timeout_seconds == 4.5
+    assert request.external_validation.eodhd.cache_ttl_seconds == 600
+    assert request.external_validation.eodhd.max_retries == 3
+    assert request.external_validation.eodhd.backoff_seconds == 0.75
+    assert request.external_validation.eodhd.allow_partial_coverage is True

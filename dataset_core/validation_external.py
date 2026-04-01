@@ -5,6 +5,15 @@ from typing import Iterable
 
 import pandas as pd
 
+from dataset_core.external_sources import (
+    ExternalSourceAuthError,
+    ExternalSourceCoverageError,
+    ExternalSourceNetworkError,
+    ExternalSourceNotFoundError,
+    ExternalSourcePayloadError,
+    ExternalSourceRateLimitError,
+    extract_source_metadata,
+)
 from dataset_core.reference_adapters import (
     EventReferenceAdapter,
     PriceReferenceAdapter,
@@ -70,7 +79,9 @@ class ExternalValidationService:
         for adapter in self.price_adapters:
             adapter_name = adapter.name()
             try:
-                reference = normalize_reference_frame(adapter.fetch_reference(symbol, start, end))
+                raw_reference = adapter.fetch_reference(symbol, start, end)
+                reference = normalize_reference_frame(raw_reference)
+                source_metadata = extract_source_metadata(reference)
             except FileNotFoundError as exc:
                 adapter_reports.append(
                     {
@@ -78,6 +89,49 @@ class ExternalValidationService:
                         "status": "not_validated",
                         "reason": str(exc),
                         "score": None,
+                        "scope": "price",
+                    }
+                )
+                continue
+            except ExternalSourceNotFoundError as exc:
+                adapter_reports.append(
+                    {
+                        "adapter": adapter_name,
+                        "status": "not_validated",
+                        "reason": str(exc),
+                        "score": None,
+                        "scope": "price",
+                        "error_kind": self._adapter_error_kind(exc),
+                    }
+                )
+                continue
+            except ExternalSourceCoverageError as exc:
+                adapter_reports.append(
+                    {
+                        "adapter": adapter_name,
+                        "status": "not_validated",
+                        "reason": str(exc),
+                        "score": None,
+                        "scope": "price",
+                        "error_kind": self._adapter_error_kind(exc),
+                    }
+                )
+                continue
+            except (
+                ExternalSourceAuthError,
+                ExternalSourceNetworkError,
+                ExternalSourceRateLimitError,
+                ExternalSourcePayloadError,
+            ) as exc:
+                has_adapter_error = True
+                adapter_reports.append(
+                    {
+                        "adapter": adapter_name,
+                        "status": "adapter_error",
+                        "reason": f"Adapter error: {exc}",
+                        "score": None,
+                        "scope": "price",
+                        "error_kind": self._adapter_error_kind(exc),
                     }
                 )
                 continue
@@ -89,6 +143,7 @@ class ExternalValidationService:
                         "status": "adapter_error",
                         "reason": f"Adapter error: {exc}",
                         "score": None,
+                        "scope": "price",
                     }
                 )
                 continue
@@ -100,6 +155,8 @@ class ExternalValidationService:
                         "status": "not_validated",
                         "reason": "Reference adapter returned no rows for the requested range.",
                         "score": None,
+                        "scope": "price",
+                        "source_metadata": source_metadata,
                     }
                 )
                 continue
@@ -126,12 +183,15 @@ class ExternalValidationService:
                 has_failure = True
             else:
                 validated_scores.append(float(comparison_report["score"]))
+            comparison_report["source_metadata"] = source_metadata
             adapter_reports.append(comparison_report)
 
         for adapter in self.event_adapters:
             adapter_name = adapter.name()
             try:
-                reference_events = normalize_event_frame(adapter.fetch_events(symbol, start, end))
+                raw_reference_events = adapter.fetch_events(symbol, start, end)
+                reference_events = normalize_event_frame(raw_reference_events)
+                source_metadata = extract_source_metadata(reference_events)
             except FileNotFoundError as exc:
                 adapter_reports.append(
                     {
@@ -140,6 +200,48 @@ class ExternalValidationService:
                         "reason": str(exc),
                         "score": None,
                         "scope": "event",
+                    }
+                )
+                continue
+            except ExternalSourceNotFoundError as exc:
+                adapter_reports.append(
+                    {
+                        "adapter": adapter_name,
+                        "status": "not_validated",
+                        "reason": str(exc),
+                        "score": None,
+                        "scope": "event",
+                        "error_kind": self._adapter_error_kind(exc),
+                    }
+                )
+                continue
+            except ExternalSourceCoverageError as exc:
+                adapter_reports.append(
+                    {
+                        "adapter": adapter_name,
+                        "status": "not_validated",
+                        "reason": str(exc),
+                        "score": None,
+                        "scope": "event",
+                        "error_kind": self._adapter_error_kind(exc),
+                    }
+                )
+                continue
+            except (
+                ExternalSourceAuthError,
+                ExternalSourceNetworkError,
+                ExternalSourceRateLimitError,
+                ExternalSourcePayloadError,
+            ) as exc:
+                has_adapter_error = True
+                adapter_reports.append(
+                    {
+                        "adapter": adapter_name,
+                        "status": "adapter_error",
+                        "reason": f"Adapter error: {exc}",
+                        "score": None,
+                        "scope": "event",
+                        "error_kind": self._adapter_error_kind(exc),
                     }
                 )
                 continue
@@ -164,6 +266,7 @@ class ExternalValidationService:
                         "reason": "Event reference adapter returned no manual events for the requested range.",
                         "score": None,
                         "scope": "event",
+                        "source_metadata": source_metadata,
                     }
                 )
                 continue
@@ -191,6 +294,7 @@ class ExternalValidationService:
                 has_failure = True
             else:
                 validated_scores.append(float(comparison_report["score"]))
+            comparison_report["source_metadata"] = source_metadata
             adapter_reports.append(comparison_report)
 
         overall_status = "not_validated"
@@ -219,6 +323,22 @@ class ExternalValidationService:
                 "adapter_reports": adapter_reports,
             }
         )
+
+    @staticmethod
+    def _adapter_error_kind(exc: Exception) -> str:
+        if isinstance(exc, ExternalSourceAuthError):
+            return "auth_error"
+        if isinstance(exc, ExternalSourceRateLimitError):
+            return "rate_limited"
+        if isinstance(exc, ExternalSourceNotFoundError):
+            return "symbol_not_found"
+        if isinstance(exc, ExternalSourceCoverageError):
+            return "coverage_insufficient"
+        if isinstance(exc, ExternalSourcePayloadError):
+            return "provider_schema_error"
+        if isinstance(exc, ExternalSourceNetworkError):
+            return "transport_error"
+        return type(exc).__name__
 
     @staticmethod
     def _relative_difference_report(
