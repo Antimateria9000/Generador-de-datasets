@@ -96,10 +96,16 @@ def test_eodhd_config_repr_and_request_serialization_do_not_expose_api_key():
 
 
 def test_external_validation_rejects_enabled_true_without_resolvable_provider():
-    with pytest.raises(RequestContractError, match="requires a resolvable provider"):
-        ExternalValidationConfig(enabled=True)
+    config = ExternalValidationConfig(enabled=True)
+
+    assert config.is_enabled() is False
+    assert config.resolved_provider() is None
+    assert config.to_dict()["status"] == "disabled"
 
 
 def test_external_validation_rejects_explicit_eodhd_provider_without_api_key():
-    with pytest.raises(RequestContractError, match="requires external_validation.eodhd.api_key"):
-        ExternalValidationConfig(enabled=True, provider="eodhd")
+    config = ExternalValidationConfig(enabled=True, provider="eodhd")
+
+    assert config.is_enabled() is False
+    assert config.resolved_provider() == "eodhd"
+    assert config.to_dict()["status"] == "disabled"

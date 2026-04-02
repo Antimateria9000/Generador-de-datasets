@@ -139,7 +139,7 @@ def test_contextual_market_notes_do_not_add_extra_degradation(monkeypatch, tmp_p
     assert result.validation_outcome == "success_partial_validation"
     assert result.warnings == []
     assert any("metadata de Yahoo" in note for note in result.neutral_notes)
-    assert any("External validation did not validate the dataset." in reason for reason in result.status_reasons)
+    assert all("External validation" not in reason for reason in result.status_reasons)
 
 
 def test_internal_validation_unsupported_degrades_to_warning(tmp_path, patch_market_context):

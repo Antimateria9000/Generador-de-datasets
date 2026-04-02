@@ -28,12 +28,13 @@ from dataset_core.settings import (
     DEFAULT_METADATA_CANDIDATE_LIMIT,
     ensure_directory,
     ensure_workspace_tree,
+    is_external_validation_runtime_enabled,
     resolve_effective_cache_paths,
     sanitize_secret_text,
     utc_now_iso,
 )
 from dataset_core.status_resolution import resolve_ticker_status
-from dataset_core.validation_external import ExternalValidationService
+from dataset_core.validation_external import DisabledExternalValidationService, ExternalValidationService
 from dataset_core.validation_internal import InternalDQService
 from providers.market_context import ContextResolver, build_dq_context_payload, resolve_instrument_context
 
@@ -93,7 +94,11 @@ class DatasetExportService:
         self.general_sanitizer = general_sanitizer or GeneralSanitizer()
         self.qlib_sanitizer = qlib_sanitizer or QlibSanitizer()
         self.internal_validation = internal_validation or InternalDQService()
-        self.external_validation = external_validation or ExternalValidationService()
+        # Product decision: keep the module in place, but isolate it completely while it is globally disabled.
+        if is_external_validation_runtime_enabled():
+            self.external_validation = external_validation or ExternalValidationService()
+        else:
+            self.external_validation = DisabledExternalValidationService()
 
     def resolve_context(
         self,
@@ -258,7 +263,13 @@ class DatasetExportService:
             )
 
             stage = "external_validation"
-            runtime_logger.info("Running external validation.", extra={"stage": stage})
+            if is_external_validation_runtime_enabled():
+                runtime_logger.info("Running external validation.", extra={"stage": stage})
+            else:
+                runtime_logger.info(
+                    "External validation module is disabled by configuration; emitting a disabled report only.",
+                    extra={"stage": stage},
+                )
             external_report = self.external_validation.validate(
                 frame=general_result.frame,
                 symbol=resolved_ticker,

@@ -135,12 +135,18 @@ def test_streamlit_helper_builds_request_with_eodhd_external_validation(monkeypa
         eodhd_backoff_seconds="0.75",
     )
 
-    assert request.external_validation.is_enabled() is True
-    assert request.external_validation.resolved_provider() == "eodhd"
-    assert request.external_validation.eodhd.api_key == "secret"
-    assert request.external_validation.eodhd.timeout_seconds == 4.5
-    assert request.external_validation.eodhd.cache_ttl_seconds == 600
-    assert request.external_validation.eodhd.allow_partial_coverage is True
+    assert request.external_validation.is_enabled() is False
+    assert request.external_validation.resolved_provider() is None
+    assert request.external_validation.eodhd.api_key is None
+    assert request.external_validation.to_dict()["enabled"] is False
+    assert request.external_validation.to_dict()["status"] == "disabled"
+
+
+def test_streamlit_ui_copy_exposes_disabled_external_validation_message():
+    title, caption = streamlit_app._external_validation_disabled_ui_copy()
+
+    assert title == "Módulo de validación externa desactivado"
+    assert "validaciones internas" in caption
 
 
 def test_streamlit_exact_range_helper_uses_shared_end_exclusive_policy():

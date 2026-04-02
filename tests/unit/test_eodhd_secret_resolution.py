@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import export_ohlcv_csv
-import pytest
 from app import streamlit_app
 
 
-def test_cli_manual_api_key_has_priority_over_env():
+def test_cli_build_request_does_not_resolve_manual_api_key_while_external_validation_is_disabled(monkeypatch):
+    monkeypatch.setattr(
+        export_ohlcv_csv,
+        "resolve_eodhd_api_key",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("resolve_eodhd_api_key should not be called while external validation is disabled.")
+        ),
+    )
     args = export_ohlcv_csv.build_parser().parse_args(
         [
             "--ticker",
@@ -21,14 +27,18 @@ def test_cli_manual_api_key_has_priority_over_env():
 
     request = export_ohlcv_csv.build_request_from_args(args)
 
-    assert request.external_validation.eodhd.api_key == "manual-secret"
+    assert request.external_validation.is_enabled() is False
+    assert request.external_validation.eodhd.api_key is None
+    assert request.external_validation.to_dict()["status"] == "disabled"
 
 
-def test_cli_uses_env_api_key_when_eodhd_provider_is_selected(monkeypatch):
+def test_cli_build_request_does_not_use_env_api_key_when_module_is_disabled(monkeypatch):
     monkeypatch.setattr(
         export_ohlcv_csv,
         "resolve_eodhd_api_key",
-        lambda manual_value, allow_env_fallback=True: "env-secret" if allow_env_fallback else None,
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("resolve_eodhd_api_key should not be called while external validation is disabled.")
+        ),
     )
     args = export_ohlcv_csv.build_parser().parse_args(
         [
@@ -43,7 +53,9 @@ def test_cli_uses_env_api_key_when_eodhd_provider_is_selected(monkeypatch):
 
     request = export_ohlcv_csv.build_request_from_args(args)
 
-    assert request.external_validation.eodhd.api_key == "env-secret"
+    assert request.external_validation.is_enabled() is False
+    assert request.external_validation.resolved_provider() is None
+    assert request.external_validation.to_dict()["status"] == "disabled"
 
 
 def test_cli_keeps_eodhd_env_fallback_disabled_when_provider_is_not_selected(monkeypatch):
@@ -65,13 +77,16 @@ def test_cli_keeps_eodhd_env_fallback_disabled_when_provider_is_not_selected(mon
 
     assert request.external_validation.eodhd.api_key is None
     assert request.external_validation.resolved_provider() is None
+    assert request.external_validation.to_dict()["status"] == "disabled"
 
 
-def test_cli_reports_a_clear_error_when_eodhd_provider_has_no_available_api_key(monkeypatch):
+def test_cli_no_longer_raises_missing_api_key_when_external_validation_module_is_disabled(monkeypatch):
     monkeypatch.setattr(
         export_ohlcv_csv,
         "resolve_eodhd_api_key",
-        lambda manual_value, allow_env_fallback=True: None,
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("resolve_eodhd_api_key should not be called while external validation is disabled.")
+        ),
     )
     args = export_ohlcv_csv.build_parser().parse_args(
         [
@@ -84,8 +99,10 @@ def test_cli_reports_a_clear_error_when_eodhd_provider_has_no_available_api_key(
         ]
     )
 
-    with pytest.raises(export_ohlcv_csv.RequestContractError, match="EODHD external validation requires an API key"):
-        export_ohlcv_csv.build_request_from_args(args)
+    request = export_ohlcv_csv.build_request_from_args(args)
+
+    assert request.external_validation.is_enabled() is False
+    assert request.external_validation.to_dict()["status"] == "disabled"
 
 
 def test_streamlit_resolution_prefers_manual_then_env_then_none(monkeypatch):

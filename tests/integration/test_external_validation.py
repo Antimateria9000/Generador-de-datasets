@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import json
 import pandas as pd
+import pytest
 
 from dataset_core.reference_adapters import CSVReferenceAdapter, ManualEventAdapter
 from dataset_core.validation_external import ExternalValidationService
 from dataset_core.batch_orchestrator import BatchOrchestrator
 from dataset_core.contracts import DatasetRequest, ExternalValidationConfig, TemporalRange
 from dataset_core.export_service import DatasetExportService
+from dataset_core.settings import EXTERNAL_VALIDATION_DISABLED_REASON
 from tests.fixtures.sample_data import DummyAcquisitionService, make_provider_frame
 
 
-def test_external_validation_reports_pass_when_reference_matches(tmp_path, patch_market_context, reference_dir):
+def test_external_validation_reports_disabled_status_when_module_is_hibernated(tmp_path, patch_market_context, reference_dir):
     frame = make_provider_frame("MSFT")
     export_service = DatasetExportService(acquisition_service=DummyAcquisitionService({"MSFT": frame}))
     orchestrator = BatchOrchestrator(export_service=export_service)
@@ -25,13 +27,23 @@ def test_external_validation_reports_pass_when_reference_matches(tmp_path, patch
 
     batch_result = orchestrator.run(request)
     result = batch_result.results[0]
+    report = json.loads(result.artifacts.external_json.read_text(encoding="utf-8"))
+    meta_payload = json.loads(result.artifacts.meta.read_text(encoding="utf-8"))
 
-    assert result.external_validation_status == "passed"
+    assert result.external_validation_status == "disabled"
+    assert result.external_validation_coverage_status is None
+    assert result.external_validation_comparison_status is None
+    assert report["enabled"] is False
+    assert report["status"] == "disabled"
+    assert report["reason"] == EXTERNAL_VALIDATION_DISABLED_REASON
+    assert meta_payload["external_validation"]["enabled"] is False
+    assert meta_payload["external_validation"]["status"] == "disabled"
+    assert meta_payload["external_validation"]["reason"] == EXTERNAL_VALIDATION_DISABLED_REASON
     assert result.artifacts.external_json.exists()
     assert result.artifacts.external_txt.exists()
 
 
-def test_external_validation_reports_not_validated_without_reference(tmp_path, patch_market_context):
+def test_external_validation_disabled_status_does_not_add_extra_degradation(tmp_path, patch_market_context):
     frame = make_provider_frame("MSFT")
     export_service = DatasetExportService(acquisition_service=DummyAcquisitionService({"MSFT": frame}))
     orchestrator = BatchOrchestrator(export_service=export_service)
@@ -45,12 +57,67 @@ def test_external_validation_reports_not_validated_without_reference(tmp_path, p
     batch_result = orchestrator.run(request)
     result = batch_result.results[0]
 
-    assert result.external_validation_status == "not_validated"
-    assert result.external_validation_coverage_status == "none"
-    assert result.external_validation_comparison_status == "not_validated"
+    assert result.external_validation_status == "disabled"
+    assert result.external_validation_coverage_status is None
+    assert result.external_validation_comparison_status is None
     assert result.status == "warning"
     assert result.validation_outcome == "success_partial_validation"
-    assert any("external validation did not validate the dataset" in reason.lower() for reason in result.status_reasons)
+    assert all("external validation" not in reason.lower() for reason in result.status_reasons)
+
+
+def test_batch_orchestrator_does_not_build_real_external_validation_service_when_module_is_disabled(
+    tmp_path, patch_market_context, reference_dir, monkeypatch
+):
+    frame = make_provider_frame("MSFT")
+    export_service = DatasetExportService(acquisition_service=DummyAcquisitionService({"MSFT": frame}))
+    orchestrator = BatchOrchestrator(export_service=export_service)
+    request = DatasetRequest(
+        tickers=["MSFT"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        output_dir=tmp_path,
+        dq_mode="off",
+        external_validation=ExternalValidationConfig(reference_dir=reference_dir),
+    )
+
+    monkeypatch.setattr(
+        "dataset_core.batch_orchestrator.build_external_validation_service",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("build_external_validation_service should not be called while module is disabled.")
+        ),
+    )
+
+    result = orchestrator.run(request).results[0]
+
+    assert result.external_validation_status == "disabled"
+
+
+def test_export_service_ignores_injected_external_validation_service_while_module_is_disabled(
+    tmp_path, patch_market_context
+):
+    class _ExplodingExternalValidationService:
+        def validate(self, *args, **kwargs):
+            raise AssertionError("The injected external validation service must not run while the module is disabled.")
+
+        def render_text(self, *args, **kwargs):
+            raise AssertionError("The injected external validation service must not render while the module is disabled.")
+
+    frame = make_provider_frame("MSFT")
+    export_service = DatasetExportService(
+        acquisition_service=DummyAcquisitionService({"MSFT": frame}),
+        external_validation=_ExplodingExternalValidationService(),
+    )
+    orchestrator = BatchOrchestrator(export_service=export_service)
+    request = DatasetRequest(
+        tickers=["MSFT"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        output_dir=tmp_path,
+        dq_mode="off",
+    )
+
+    result = orchestrator.run(request).results[0]
+
+    assert result.external_validation_status == "disabled"
+    assert result.artifacts.csv.exists()
 
 
 def test_external_validation_reports_adapter_error_separately_from_missing_reference(tmp_path):

@@ -31,6 +31,7 @@ from dataset_core.settings import (
     PRESET_NAMES,
     SUPPORTED_INTERVALS,
     YFINANCE_CACHE_MODES,
+    is_external_validation_runtime_enabled,
     resolve_eodhd_api_key,
 )
 
@@ -268,36 +269,39 @@ def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
         batch_max_workers=args.provider_batch_max_workers,
         batch_chunk_size=args.provider_batch_chunk_size,
     )
-    effective_eodhd_api_key = resolve_requested_eodhd_api_key(
-        args.eodhd_api_key,
-        external_validation_provider=args.external_validation_provider,
-    )
-    _assert_eodhd_credentials_available(
-        effective_eodhd_api_key,
-        external_validation_provider=args.external_validation_provider,
-    )
-    external_validation = ExternalValidationConfig(
-        enabled=True if args.external_validation_enabled else None,
-        provider=args.external_validation_provider,
-        reference_dir=None if not args.reference_dir else Path(args.reference_dir).expanduser().resolve(),
-        manual_events_file=None
-        if not args.manual_events_file
-        else Path(args.manual_events_file).expanduser().resolve(),
-        eodhd=EODHDExternalValidationConfig(
-            api_key=effective_eodhd_api_key,
-            base_url=args.eodhd_base_url or DEFAULT_EODHD_BASE_URL,
-            timeout_seconds=args.eodhd_timeout_seconds or DEFAULT_EODHD_TIMEOUT_SECONDS,
-            use_cache=not bool(args.eodhd_no_cache),
-            cache_dir=None if not args.eodhd_cache_dir else Path(args.eodhd_cache_dir).expanduser().resolve(),
-            cache_ttl_seconds=DEFAULT_EODHD_CACHE_TTL_SECONDS
-            if args.eodhd_cache_ttl_seconds is None
-            else args.eodhd_cache_ttl_seconds,
-            allow_partial_coverage=bool(args.eodhd_allow_partial_coverage),
-            max_retries=args.eodhd_max_retries or DEFAULT_EODHD_MAX_RETRIES,
-            backoff_seconds=args.eodhd_backoff_seconds or DEFAULT_EODHD_BACKOFF_SECONDS,
-            price_lookback_days=args.eodhd_price_lookback_days or DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
-        ),
-    )
+    if is_external_validation_runtime_enabled():
+        effective_eodhd_api_key = resolve_requested_eodhd_api_key(
+            args.eodhd_api_key,
+            external_validation_provider=args.external_validation_provider,
+        )
+        _assert_eodhd_credentials_available(
+            effective_eodhd_api_key,
+            external_validation_provider=args.external_validation_provider,
+        )
+        external_validation = ExternalValidationConfig(
+            enabled=True if args.external_validation_enabled else None,
+            provider=args.external_validation_provider,
+            reference_dir=None if not args.reference_dir else Path(args.reference_dir).expanduser().resolve(),
+            manual_events_file=None
+            if not args.manual_events_file
+            else Path(args.manual_events_file).expanduser().resolve(),
+            eodhd=EODHDExternalValidationConfig(
+                api_key=effective_eodhd_api_key,
+                base_url=args.eodhd_base_url or DEFAULT_EODHD_BASE_URL,
+                timeout_seconds=args.eodhd_timeout_seconds or DEFAULT_EODHD_TIMEOUT_SECONDS,
+                use_cache=not bool(args.eodhd_no_cache),
+                cache_dir=None if not args.eodhd_cache_dir else Path(args.eodhd_cache_dir).expanduser().resolve(),
+                cache_ttl_seconds=DEFAULT_EODHD_CACHE_TTL_SECONDS
+                if args.eodhd_cache_ttl_seconds is None
+                else args.eodhd_cache_ttl_seconds,
+                allow_partial_coverage=bool(args.eodhd_allow_partial_coverage),
+                max_retries=args.eodhd_max_retries or DEFAULT_EODHD_MAX_RETRIES,
+                backoff_seconds=args.eodhd_backoff_seconds or DEFAULT_EODHD_BACKOFF_SECONDS,
+                price_lookback_days=args.eodhd_price_lookback_days or DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
+            ),
+        )
+    else:
+        external_validation = ExternalValidationConfig()
 
     return DatasetRequest(
         tickers=tickers,
@@ -402,14 +406,40 @@ def export_one_ticker(
     provider_batch_chunk_size: Optional[int] = None,
     execution_mode: str = "concurrent",
 ) -> Path:
-    effective_eodhd_api_key = resolve_requested_eodhd_api_key(
-        eodhd_api_key,
-        external_validation_provider=external_validation_provider,
-    )
-    _assert_eodhd_credentials_available(
-        effective_eodhd_api_key,
-        external_validation_provider=external_validation_provider,
-    )
+    if is_external_validation_runtime_enabled():
+        effective_eodhd_api_key = resolve_requested_eodhd_api_key(
+            eodhd_api_key,
+            external_validation_provider=external_validation_provider,
+        )
+        _assert_eodhd_credentials_available(
+            effective_eodhd_api_key,
+            external_validation_provider=external_validation_provider,
+        )
+        external_validation = ExternalValidationConfig(
+            enabled=external_validation_enabled,
+            provider=external_validation_provider,
+            reference_dir=None if not reference_dir else Path(reference_dir).expanduser().resolve(),
+            manual_events_file=None
+            if not manual_events_file
+            else Path(manual_events_file).expanduser().resolve(),
+            eodhd=EODHDExternalValidationConfig(
+                api_key=effective_eodhd_api_key,
+                base_url=eodhd_base_url or DEFAULT_EODHD_BASE_URL,
+                timeout_seconds=eodhd_timeout_seconds or DEFAULT_EODHD_TIMEOUT_SECONDS,
+                use_cache=bool(eodhd_use_cache),
+                cache_dir=None if not eodhd_cache_dir else Path(eodhd_cache_dir).expanduser().resolve(),
+                cache_ttl_seconds=DEFAULT_EODHD_CACHE_TTL_SECONDS
+                if eodhd_cache_ttl_seconds is None
+                else eodhd_cache_ttl_seconds,
+                allow_partial_coverage=bool(eodhd_allow_partial_coverage),
+                max_retries=eodhd_max_retries or DEFAULT_EODHD_MAX_RETRIES,
+                backoff_seconds=eodhd_backoff_seconds or DEFAULT_EODHD_BACKOFF_SECONDS,
+                price_lookback_days=eodhd_price_lookback_days or DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
+            ),
+        )
+    else:
+        external_validation = ExternalValidationConfig()
+
     request = DatasetRequest(
         tickers=[ticker],
         time_range=TemporalRange.from_inputs(
@@ -443,28 +473,7 @@ def export_one_ticker(
             batch_max_workers=provider_batch_max_workers,
             batch_chunk_size=provider_batch_chunk_size,
         ),
-        external_validation=ExternalValidationConfig(
-            enabled=external_validation_enabled,
-            provider=external_validation_provider,
-            reference_dir=None if not reference_dir else Path(reference_dir).expanduser().resolve(),
-            manual_events_file=None
-            if not manual_events_file
-            else Path(manual_events_file).expanduser().resolve(),
-            eodhd=EODHDExternalValidationConfig(
-                api_key=effective_eodhd_api_key,
-                base_url=eodhd_base_url or DEFAULT_EODHD_BASE_URL,
-                timeout_seconds=eodhd_timeout_seconds or DEFAULT_EODHD_TIMEOUT_SECONDS,
-                use_cache=bool(eodhd_use_cache),
-                cache_dir=None if not eodhd_cache_dir else Path(eodhd_cache_dir).expanduser().resolve(),
-                cache_ttl_seconds=DEFAULT_EODHD_CACHE_TTL_SECONDS
-                if eodhd_cache_ttl_seconds is None
-                else eodhd_cache_ttl_seconds,
-                allow_partial_coverage=bool(eodhd_allow_partial_coverage),
-                max_retries=eodhd_max_retries or DEFAULT_EODHD_MAX_RETRIES,
-                backoff_seconds=eodhd_backoff_seconds or DEFAULT_EODHD_BACKOFF_SECONDS,
-                price_lookback_days=eodhd_price_lookback_days or DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
-            ),
-        ),
+        external_validation=external_validation,
     )
     result = BatchOrchestrator().run(request, execution_mode=execution_mode).results[0]
     if result.artifacts.csv is None:

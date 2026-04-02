@@ -26,11 +26,12 @@ from dataset_core.settings import (
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_YFINANCE_CACHE_MODE,
     DQ_MODES,
+    EXTERNAL_VALIDATION_DISABLED_REASON,
     LISTING_PREFERENCES,
     PRESET_NAMES,
     SUPPORTED_INTERVALS,
     YFINANCE_CACHE_MODES,
-    get_default_eodhd_api_key,
+    is_external_validation_runtime_enabled,
     resolve_eodhd_api_key,
     sanitize_secret_text,
 )
@@ -79,6 +80,13 @@ def resolve_requested_eodhd_api_key(
     return resolve_eodhd_api_key(
         manual_api_key,
         allow_env_fallback=str(external_validation_provider or "").strip().lower() == "eodhd",
+    )
+
+
+def _external_validation_disabled_ui_copy() -> tuple[str, str]:
+    return (
+        "Módulo de validación externa desactivado",
+        "Desactivado temporalmente. El pipeline actual utiliza únicamente validaciones internas.",
     )
 
 
@@ -172,52 +180,16 @@ def _build_request_from_form(
             raise ValueError(f"{label} debe ser > 0.")
         return value
 
-    effective_eodhd_api_key = resolve_requested_eodhd_api_key(
-        eodhd_api_key,
-        external_validation_provider=external_validation_provider,
-    )
-    if str(external_validation_provider or "").strip().lower() == "eodhd" and effective_eodhd_api_key is None:
-        raise ValueError(
-            "EODHD requiere una API key. Define EODHD_API_KEY en el .env de la raiz del proyecto o introduce una key manual para esta sesion."
+    if is_external_validation_runtime_enabled():
+        effective_eodhd_api_key = resolve_requested_eodhd_api_key(
+            eodhd_api_key,
+            external_validation_provider=external_validation_provider,
         )
-
-    return DatasetRequest(
-        tickers=tickers,
-        time_range=time_range,
-        output_dir=Path(output_dir).expanduser().resolve(),
-        interval=interval,
-        mode=mode,
-        extras=extras,
-        listing_preference=listing_preference,
-        dq_mode=dq_mode,
-        dq_market="AUTO",
-        auto_adjust=False,
-        actions=True,
-        qlib_sanitization=qlib_sanitization or mode == "qlib",
-        provider=ProviderConfig(
-            cache_mode=provider_cache_mode,
-            metadata_timeout=_parse_optional_positive_float(
-                provider_metadata_timeout,
-                "Metadata timeout",
-            ),
-            metadata_candidate_limit=_parse_optional_positive_int(
-                provider_metadata_candidate_limit,
-                "Metadata candidate limit",
-            ),
-            context_cache_ttl_seconds=_parse_optional_non_negative_int(
-                provider_context_cache_ttl_seconds,
-                "Context cache TTL",
-            ),
-            batch_max_workers=_parse_optional_positive_int(
-                provider_batch_max_workers,
-                "Batch max workers",
-            ),
-            batch_chunk_size=_parse_optional_positive_int(
-                provider_batch_chunk_size,
-                "Batch chunk size",
-            ),
-        ),
-        external_validation=ExternalValidationConfig(
+        if str(external_validation_provider or "").strip().lower() == "eodhd" and effective_eodhd_api_key is None:
+            raise ValueError(
+                "EODHD requiere una API key. Define EODHD_API_KEY en el .env de la raiz del proyecto o introduce una key manual para esta sesion."
+            )
+        external_validation = ExternalValidationConfig(
             enabled=external_validation_enabled or None,
             provider=None if not external_validation_provider.strip() else external_validation_provider.strip(),
             reference_dir=None if not reference_dir.strip() else Path(reference_dir).expanduser().resolve(),
@@ -257,7 +229,47 @@ def _build_request_from_form(
                 )
                 or DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
             ),
+        )
+    else:
+        external_validation = ExternalValidationConfig()
+
+    return DatasetRequest(
+        tickers=tickers,
+        time_range=time_range,
+        output_dir=Path(output_dir).expanduser().resolve(),
+        interval=interval,
+        mode=mode,
+        extras=extras,
+        listing_preference=listing_preference,
+        dq_mode=dq_mode,
+        dq_market="AUTO",
+        auto_adjust=False,
+        actions=True,
+        qlib_sanitization=qlib_sanitization or mode == "qlib",
+        provider=ProviderConfig(
+            cache_mode=provider_cache_mode,
+            metadata_timeout=_parse_optional_positive_float(
+                provider_metadata_timeout,
+                "Metadata timeout",
+            ),
+            metadata_candidate_limit=_parse_optional_positive_int(
+                provider_metadata_candidate_limit,
+                "Metadata candidate limit",
+            ),
+            context_cache_ttl_seconds=_parse_optional_non_negative_int(
+                provider_context_cache_ttl_seconds,
+                "Context cache TTL",
+            ),
+            batch_max_workers=_parse_optional_positive_int(
+                provider_batch_max_workers,
+                "Batch max workers",
+            ),
+            batch_chunk_size=_parse_optional_positive_int(
+                provider_batch_chunk_size,
+                "Batch chunk size",
+            ),
         ),
+        external_validation=external_validation,
     )
 
 
@@ -605,64 +617,26 @@ def main() -> None:
                     help="Tamano del lote para adquisicion agrupada.",
                 )
 
-        with st.expander("Validacion externa opcional"):
-            external_validation_enabled = st.checkbox(
-                "Activar validacion externa",
-                value=False,
-                help="Puedes seguir usando el modo legacy CSV/manual o seleccionar EODHD como fuente modular.",
-            )
-            external_validation_provider = st.selectbox(
-                "Provider de validacion",
-                ("", "csv", "eodhd"),
-                format_func=lambda value: "Legacy CSV/manual" if value in {"", "csv"} else "EODHD",
-            )
-            reference_dir = st.text_input("Directorio con CSVs de referencia", value="")
-            manual_events_file = st.text_input("Fichero de eventos manuales", value="")
-            if external_validation_provider == "eodhd":
-                has_default_eodhd_api_key = get_default_eodhd_api_key() is not None
-                eodhd_col_1, eodhd_col_2 = st.columns(2)
-                with eodhd_col_1:
-                    eodhd_api_key = st.text_input(
-                        "EODHD API key (opcional si ya esta en .env)",
-                        value="",
-                        type="password",
-                    )
-                    if has_default_eodhd_api_key:
-                        st.caption("Si dejas este campo vacio, la aplicacion usara silenciosamente la key de `.env`.")
-                    eodhd_base_url = st.text_input("EODHD base URL", value=DEFAULT_EODHD_BASE_URL)
-                    eodhd_timeout_seconds = st.text_input("EODHD timeout (s)", value=str(DEFAULT_EODHD_TIMEOUT_SECONDS))
-                    eodhd_cache_ttl_seconds = st.text_input(
-                        "EODHD cache TTL (s)",
-                        value=str(DEFAULT_EODHD_CACHE_TTL_SECONDS),
-                    )
-                    eodhd_price_lookback_days = st.text_input(
-                        "EODHD price lookback (dias)",
-                        value=str(DEFAULT_EODHD_PRICE_LOOKBACK_DAYS),
-                        help="Ventana maxima que se solicita a EODHD para validar precios. Util para el plan gratuito de 1 ano.",
-                    )
-                with eodhd_col_2:
-                    eodhd_use_cache = st.checkbox("Usar cache EODHD", value=True)
-                    eodhd_cache_dir = st.text_input("Directorio cache EODHD", value="")
-                    eodhd_max_retries = st.text_input("EODHD max retries", value=str(DEFAULT_EODHD_MAX_RETRIES))
-                    eodhd_backoff_seconds = st.text_input(
-                        "EODHD backoff (s)",
-                        value=str(DEFAULT_EODHD_BACKOFF_SECONDS),
-                    )
-                    eodhd_allow_partial_coverage = st.checkbox(
-                        "Permitir cobertura parcial en corporate actions",
-                        value=False,
-                    )
-            else:
-                eodhd_api_key = ""
-                eodhd_base_url = ""
-                eodhd_timeout_seconds = ""
-                eodhd_use_cache = True
-                eodhd_cache_dir = ""
-                eodhd_cache_ttl_seconds = ""
-                eodhd_allow_partial_coverage = False
-                eodhd_max_retries = ""
-                eodhd_backoff_seconds = ""
-                eodhd_price_lookback_days = ""
+        with st.expander("Validación externa", expanded=False):
+            disabled_title, disabled_caption = _external_validation_disabled_ui_copy()
+            st.info(disabled_title)
+            st.caption(disabled_caption)
+            if not is_external_validation_runtime_enabled():
+                st.caption(EXTERNAL_VALIDATION_DISABLED_REASON)
+            external_validation_enabled = False
+            external_validation_provider = ""
+            reference_dir = ""
+            manual_events_file = ""
+            eodhd_api_key = ""
+            eodhd_base_url = ""
+            eodhd_timeout_seconds = ""
+            eodhd_use_cache = False
+            eodhd_cache_dir = ""
+            eodhd_cache_ttl_seconds = ""
+            eodhd_allow_partial_coverage = False
+            eodhd_max_retries = ""
+            eodhd_backoff_seconds = ""
+            eodhd_price_lookback_days = ""
 
         _render_column_block(mode, qlib_sanitization)
         submitted = st.form_submit_button("Generar dataset", width="stretch")

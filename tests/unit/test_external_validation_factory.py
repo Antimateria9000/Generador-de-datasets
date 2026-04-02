@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from dataset_core.contracts import EODHDExternalValidationConfig, ExternalValidationConfig, RequestContractError
+from dataset_core.contracts import EODHDExternalValidationConfig, ExternalValidationConfig
 from dataset_core.external_sources.factory import build_external_validation_service
-from dataset_core.settings import resolve_eodhd_api_key, reset_local_env_cache
+from dataset_core.settings import EXTERNAL_VALIDATION_DISABLED_REASON, resolve_eodhd_api_key, reset_local_env_cache
+from dataset_core.validation_external import DisabledExternalValidationService
 
 
 def test_external_validation_config_resolves_legacy_csv_provider(tmp_path):
@@ -15,11 +16,11 @@ def test_external_validation_config_resolves_legacy_csv_provider(tmp_path):
         manual_events_file=tmp_path / "manual_events.csv",
     )
 
-    assert config.is_enabled() is True
+    assert config.is_enabled() is False
     assert config.resolved_provider() == "csv"
 
 
-def test_external_validation_factory_builds_legacy_csv_service(tmp_path):
+def test_external_validation_factory_returns_disabled_service_for_legacy_csv_config(tmp_path):
     config = ExternalValidationConfig(
         provider="csv",
         enabled=True,
@@ -29,19 +30,20 @@ def test_external_validation_factory_builds_legacy_csv_service(tmp_path):
 
     service = build_external_validation_service(config, output_root=tmp_path)
 
-    assert [adapter.name() for adapter in service.price_adapters] == ["csv_reference"]
-    assert [adapter.name() for adapter in service.event_adapters] == ["manual_events"]
+    assert isinstance(service, DisabledExternalValidationService)
+    report = service.validate(frame=None, symbol="MSFT", start=None, end=None).to_dict()
+    assert report["enabled"] is False
+    assert report["status"] == "disabled"
+    assert report["reason"] == EXTERNAL_VALIDATION_DISABLED_REASON
 
 
-def test_external_validation_factory_builds_eodhd_service_with_workspace_cache(tmp_path, monkeypatch):
-    captured: dict[str, object] = {}
+def test_external_validation_factory_never_instantiates_eodhd_client_while_module_is_disabled(
+    tmp_path, monkeypatch
+):
+    def _raise_if_called(**_kwargs):
+        raise AssertionError("EODHDClient should not be instantiated while external validation is disabled.")
 
-    class _StubClient:
-        def __init__(self, **kwargs) -> None:
-            captured.update(kwargs)
-            self.metrics = {"request_count": 0, "cache_hits": 0, "cache_misses": 0}
-
-    monkeypatch.setattr("dataset_core.external_sources.factory.EODHDClient", _StubClient)
+    monkeypatch.setattr("dataset_core.external_sources.factory.EODHDClient", _raise_if_called)
     config = ExternalValidationConfig(
         enabled=True,
         provider="eodhd",
@@ -50,24 +52,21 @@ def test_external_validation_factory_builds_eodhd_service_with_workspace_cache(t
 
     service = build_external_validation_service(config, output_root=tmp_path)
 
-    assert [adapter.name() for adapter in service.price_adapters] == ["eodhd_prices"]
-    assert [adapter.name() for adapter in service.event_adapters] == ["eodhd_corporate_actions"]
-    assert Path(captured["cache_dir"]) == tmp_path / "cache" / "external_validation" / "eodhd"
-    assert service.price_adapters[0].price_lookback_days == 365
+    assert isinstance(service, DisabledExternalValidationService)
+    report = service.validate(frame=None, symbol="MSFT", start=None, end=None).to_dict()
+    assert report["status"] == "disabled"
 
 
-def test_external_validation_factory_accepts_api_key_resolved_from_env(tmp_path, monkeypatch):
-    captured: dict[str, object] = {}
-
-    class _StubClient:
-        def __init__(self, **kwargs) -> None:
-            captured.update(kwargs)
-            self.metrics = {"request_count": 0, "cache_hits": 0, "cache_misses": 0}
-
+def test_external_validation_factory_ignores_env_resolved_eodhd_credentials_while_disabled(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text("EODHD_API_KEY=env-secret\n", encoding="utf-8")
     monkeypatch.delenv("EODHD_API_KEY", raising=False)
-    monkeypatch.setattr("dataset_core.external_sources.factory.EODHDClient", _StubClient)
+    monkeypatch.setattr(
+        "dataset_core.external_sources.factory.EODHDClient",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("EODHDClient should not be constructed while external validation is disabled.")
+        ),
+    )
     reset_local_env_cache()
 
     config = ExternalValidationConfig(
@@ -81,10 +80,12 @@ def test_external_validation_factory_accepts_api_key_resolved_from_env(tmp_path,
 
     service = build_external_validation_service(config, output_root=tmp_path)
 
-    assert [adapter.name() for adapter in service.price_adapters] == ["eodhd_prices"]
-    assert captured["api_key"] == "env-secret"
+    assert isinstance(service, DisabledExternalValidationService)
+    assert service.validate(frame=None, symbol="MSFT", start=None, end=None).to_dict()["status"] == "disabled"
 
 
 def test_external_validation_factory_never_receives_enabled_config_without_resolved_provider():
-    with pytest.raises(RequestContractError, match="resolvable provider"):
-        ExternalValidationConfig(enabled=True)
+    config = ExternalValidationConfig(enabled=True)
+
+    assert config.is_enabled() is False
+    assert config.to_dict()["status"] == "disabled"

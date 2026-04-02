@@ -31,6 +31,8 @@ DEFAULT_EODHD_MAX_RETRIES: Final[int] = 2
 DEFAULT_EODHD_BACKOFF_SECONDS: Final[float] = 0.5
 DEFAULT_EODHD_PRICE_LOOKBACK_DAYS: Final[int] = 365
 DEFAULT_YFINANCE_CACHE_MODE: Final[str] = "shared"
+EXTERNAL_VALIDATION_ENABLED: Final[bool] = False
+EXTERNAL_VALIDATION_DISABLED_REASON: Final[str] = "Module disabled by configuration."
 
 SUPPORTED_INTERVALS: Final[tuple[str, ...]] = (
     "1m",
@@ -140,6 +142,10 @@ def resolve_effective_cache_paths(
         "yfinance": yfinance_cache,
         "market_context": cache_root / "market_context",
     }
+
+
+def is_external_validation_runtime_enabled() -> bool:
+    return bool(EXTERNAL_VALIDATION_ENABLED)
 
 
 def normalize_yfinance_cache_mode(mode: str | None) -> str:

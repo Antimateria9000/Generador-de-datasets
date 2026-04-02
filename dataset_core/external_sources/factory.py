@@ -11,8 +11,8 @@ from dataset_core.external_sources.eodhd import (
     EODHDSymbolResolver,
 )
 from dataset_core.external_sources.manual_events import ManualEventReferenceSource
-from dataset_core.settings import resolve_workspace_tree
-from dataset_core.validation_external import ExternalValidationService
+from dataset_core.settings import is_external_validation_runtime_enabled, resolve_workspace_tree
+from dataset_core.validation_external import DisabledExternalValidationService, ExternalValidationService
 
 
 def _default_eodhd_cache_dir(output_root: Path | None) -> Path:
@@ -24,7 +24,10 @@ def build_external_validation_service(
     config: ExternalValidationConfig,
     *,
     output_root: Path | None = None,
-) -> ExternalValidationService:
+) -> ExternalValidationService | DisabledExternalValidationService:
+    if not is_external_validation_runtime_enabled():
+        return DisabledExternalValidationService()
+
     if not config.is_enabled():
         return ExternalValidationService()
 

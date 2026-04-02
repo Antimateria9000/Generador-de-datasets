@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 _PARTIAL_EXTERNAL_STATUSES = {None, "", "not_validated", "skipped", "passed_partial"}
+_NEUTRAL_EXTERNAL_STATUSES = {"disabled"}
 _PARTIAL_INTERNAL_STATUSES = {None, "", "passed_with_warnings", "skipped", "unsupported"}
 _EXTERNAL_STATUS_MESSAGES = {
     "adapter_error": "External validation adapter failed.",
@@ -140,7 +141,9 @@ def resolve_ticker_status(
             )
         )
 
-    if normalized_external == "passed":
+    if normalized_external in _NEUTRAL_EXTERNAL_STATUSES:
+        pass
+    elif normalized_external == "passed":
         pass
     elif normalized_external in _PARTIAL_EXTERNAL_STATUSES:
         partial_validation = True

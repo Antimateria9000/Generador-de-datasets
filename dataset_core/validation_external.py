@@ -23,7 +23,11 @@ from dataset_core.reference_adapters import (
     normalize_event_frame,
     normalize_reference_frame,
 )
-from dataset_core.settings import REFERENCE_RELATIVE_TOLERANCE, REFERENCE_SAMPLE_POINTS
+from dataset_core.settings import (
+    EXTERNAL_VALIDATION_DISABLED_REASON,
+    REFERENCE_RELATIVE_TOLERANCE,
+    REFERENCE_SAMPLE_POINTS,
+)
 
 CoverageStatus = Literal["full", "partial", "none"]
 ComparisonStatus = Literal["passed", "failed", "not_validated", "adapter_error", "validation_error"]
@@ -61,6 +65,42 @@ def _unique_non_empty(values: Iterable[object]) -> list[str]:
     return output
 
 
+def build_disabled_external_validation_report(
+    *,
+    reason: str = EXTERNAL_VALIDATION_DISABLED_REASON,
+) -> dict[str, object]:
+    return {
+        "enabled": False,
+        "status": "disabled",
+        "coverage_status": None,
+        "comparison_status": None,
+        "partial_validation_kinds": [],
+        "score": None,
+        "reason": str(reason).strip() or EXTERNAL_VALIDATION_DISABLED_REASON,
+        "adapter_reports": [],
+    }
+
+
+class DisabledExternalValidationService:
+    """Temporary no-op service used while the external validation module is hibernated."""
+
+    def __init__(self, *, reason: str = EXTERNAL_VALIDATION_DISABLED_REASON) -> None:
+        self.reason = str(reason).strip() or EXTERNAL_VALIDATION_DISABLED_REASON
+
+    def validate(
+        self,
+        frame: pd.DataFrame,
+        symbol: str,
+        start: str | None,
+        end: str | None,
+    ) -> ExternalValidationResult:
+        return ExternalValidationResult(build_disabled_external_validation_report(reason=self.reason))
+
+    @staticmethod
+    def render_text(report: dict[str, object], symbol: str) -> str:
+        return ExternalValidationService.render_text(report, symbol)
+
+
 class ExternalValidationService:
     def __init__(
         self,
@@ -89,6 +129,7 @@ class ExternalValidationService:
         if dataset.empty:
             return ExternalValidationResult(
                 {
+                    "enabled": True,
                     "status": "not_validated",
                     "coverage_status": "none",
                     "comparison_status": "not_validated",
@@ -126,6 +167,7 @@ class ExternalValidationService:
 
         return ExternalValidationResult(
             {
+                "enabled": True,
                 "status": overall_status,
                 "coverage_status": coverage_status,
                 "comparison_status": comparison_status,
@@ -908,8 +950,18 @@ class ExternalValidationService:
 
     @staticmethod
     def render_text(report: dict[str, object], symbol: str) -> str:
+        if str(report.get("status") or "").strip().lower() == "disabled":
+            lines = [
+                f"External validation report for {symbol}",
+                f"enabled: {report.get('enabled')}",
+                f"status: {report.get('status')}",
+                f"reason: {report.get('reason')}",
+            ]
+            return "\n".join(lines).strip() + "\n"
+
         lines = [
             f"External validation report for {symbol}",
+            f"enabled: {report.get('enabled', True)}",
             f"status: {report.get('status')}",
             f"coverage_status: {report.get('coverage_status')}",
             f"comparison_status: {report.get('comparison_status')}",

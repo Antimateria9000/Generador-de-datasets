@@ -83,3 +83,20 @@ def test_passed_partial_external_status_describes_provider_covered_overlap():
     assert result.status == "warning"
     assert result.validation_outcome == "success_partial_validation"
     assert any("provider-covered overlap only" in reason.lower() for reason in result.reasons)
+
+
+def test_disabled_external_status_is_neutral():
+    result = resolve_ticker_status(
+        warnings=[],
+        neutral_notes=[],
+        internal_validation_status="passed",
+        external_validation_status="disabled",
+        external_validation_reason="Module disabled by configuration.",
+        qlib_requested=False,
+        qlib_compatible=False,
+        qlib_errors=[],
+    )
+
+    assert result.status == "success"
+    assert result.validation_outcome == "success_validated"
+    assert result.reasons == []

@@ -13,7 +13,11 @@ from dataset_core.logging_runtime import bind_runtime_logger, close_run_logger, 
 from dataset_core.manifest_service import build_batch_manifest, render_batch_manifest_text
 from dataset_core.result_models import BatchResult
 from dataset_core.serialization import cleanup_orphan_temp_files, write_json, write_text
-from dataset_core.settings import DEFAULT_METADATA_CANDIDATE_LIMIT, resolve_effective_cache_paths
+from dataset_core.settings import (
+    DEFAULT_METADATA_CANDIDATE_LIMIT,
+    is_external_validation_runtime_enabled,
+    resolve_effective_cache_paths,
+)
 from providers.market_context import ContextResolver
 
 
@@ -390,7 +394,7 @@ class BatchOrchestrator:
     ) -> BatchResult:
         normalized_execution_mode = self._normalize_execution_mode(execution_mode)
         export_service = self.export_service
-        if request.external_validation.is_enabled():
+        if is_external_validation_runtime_enabled() and request.external_validation.is_enabled():
             export_service = DatasetExportService(
                 acquisition_service=export_service.acquisition_service,
                 schema_builder=export_service.schema_builder,

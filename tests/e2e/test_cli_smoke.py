@@ -72,7 +72,7 @@ def test_cli_build_request_exposes_runtime_controls(tmp_path):
     assert args.execution_mode == "sequential"
 
 
-def test_cli_build_request_supports_modular_eodhd_external_validation(tmp_path):
+def test_cli_build_request_ignores_external_validation_runtime_arguments_while_module_is_disabled(tmp_path):
     args = build_parser().parse_args(
         [
             "--ticker",
@@ -100,11 +100,7 @@ def test_cli_build_request_supports_modular_eodhd_external_validation(tmp_path):
 
     request = build_request_from_args(args)
 
-    assert request.external_validation.is_enabled() is True
-    assert request.external_validation.resolved_provider() == "eodhd"
-    assert request.external_validation.eodhd.api_key == "secret"
-    assert request.external_validation.eodhd.timeout_seconds == 4.5
-    assert request.external_validation.eodhd.cache_ttl_seconds == 600
-    assert request.external_validation.eodhd.max_retries == 3
-    assert request.external_validation.eodhd.backoff_seconds == 0.75
-    assert request.external_validation.eodhd.allow_partial_coverage is True
+    assert request.external_validation.is_enabled() is False
+    assert request.external_validation.resolved_provider() is None
+    assert request.external_validation.eodhd.api_key is None
+    assert request.external_validation.to_dict()["status"] == "disabled"

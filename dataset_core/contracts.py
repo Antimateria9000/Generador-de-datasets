@@ -19,11 +19,13 @@ from dataset_core.settings import (
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_YFINANCE_CACHE_MODE,
     DQ_MODES,
+    EXTERNAL_VALIDATION_DISABLED_REASON,
     LISTING_PREFERENCES,
     OPTIONAL_COLUMNS,
     PRESET_NAMES,
     SUPPORTED_INTERVALS,
     YFINANCE_CACHE_MODES,
+    is_external_validation_runtime_enabled,
     normalize_yfinance_cache_mode,
     register_secret,
 )
@@ -369,17 +371,14 @@ class ExternalValidationConfig:
         self._validate_runtime_configuration()
 
     def _should_validate_runtime_configuration(self) -> bool:
+        if not is_external_validation_runtime_enabled():
+            return False
         if self.enabled is False:
             return False
         return bool(self.provider is not None or self.has_legacy_sources or self.eodhd.api_key)
 
     def _validate_runtime_configuration(self) -> None:
         if not self._should_validate_runtime_configuration():
-            if self.enabled is True and self.resolved_provider() is None:
-                raise RequestContractError(
-                    "external_validation.enabled=True requires a resolvable provider. "
-                    "Configure external_validation.provider, legacy CSV/manual sources, or EODHD credentials."
-                )
             return
 
         provider = self.resolved_provider()
@@ -411,13 +410,28 @@ class ExternalValidationConfig:
         return None
 
     def is_enabled(self) -> bool:
+        if not is_external_validation_runtime_enabled():
+            return False
         if self.enabled is False:
             return False
         return self.resolved_provider() is not None
 
     def to_dict(self) -> dict[str, object]:
+        runtime_enabled = is_external_validation_runtime_enabled()
+        effective_enabled = self.is_enabled()
+        if not runtime_enabled:
+            status = "disabled"
+            reason = EXTERNAL_VALIDATION_DISABLED_REASON
+        elif effective_enabled:
+            status = "enabled"
+            reason = None
+        else:
+            status = "not_configured"
+            reason = "No external validation provider configured."
         return {
-            "enabled": self.is_enabled(),
+            "enabled": effective_enabled,
+            "status": status,
+            "reason": reason,
             "provider": self.resolved_provider(),
             "reference_dir": None if self.reference_dir is None else str(self.reference_dir.resolve()),
             "manual_events_file": None
