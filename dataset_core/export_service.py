@@ -29,6 +29,7 @@ from dataset_core.settings import (
     ensure_directory,
     ensure_workspace_tree,
     resolve_effective_cache_paths,
+    sanitize_secret_text,
     utc_now_iso,
 )
 from dataset_core.status_resolution import resolve_ticker_status
@@ -527,14 +528,18 @@ class DatasetExportService:
         except Exception as exc:
             traceback_text = traceback.format_exc()
             exception_type = type(exc).__name__
-            error_summary = f"{stage}: {exception_type}: {exc}"
+            safe_message = sanitize_secret_text(str(exc)) or exception_type
+            safe_traceback_excerpt = sanitize_secret_text(
+                "\n".join(traceback_text.strip().splitlines()[-20:])[-4000:]
+            ) or ""
+            error_summary = f"{stage}: {exception_type}: {safe_message}"
             errors.append(error_summary)
             error_artifacts = _existing_artifacts_only(artifacts)
             error_context = {
                 "stage": stage,
                 "exception_type": exception_type,
-                "message": str(exc),
-                "traceback_excerpt": "\n".join(traceback_text.strip().splitlines()[-20:])[-4000:],
+                "message": safe_message,
+                "traceback_excerpt": safe_traceback_excerpt,
                 "requested_ticker": requested_ticker,
                 "resolved_ticker": resolved_ticker,
                 "provider_symbol": provider_symbol,
@@ -580,7 +585,7 @@ class DatasetExportService:
                 "error": error_context,
                 "stage": stage,
                 "exception_type": exception_type,
-                "message": str(exc),
+                "message": safe_message,
                 "traceback_excerpt": error_context["traceback_excerpt"],
                 "artifacts": error_artifacts.to_dict(),
             }

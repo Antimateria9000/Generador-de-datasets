@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Sequence
 
@@ -14,6 +14,7 @@ from dataset_core.settings import (
     DEFAULT_EODHD_BASE_URL,
     DEFAULT_EODHD_CACHE_TTL_SECONDS,
     DEFAULT_EODHD_MAX_RETRIES,
+    DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
     DEFAULT_EODHD_TIMEOUT_SECONDS,
     DEFAULT_OUTPUT_ROOT,
     DQ_MODES,
@@ -21,6 +22,7 @@ from dataset_core.settings import (
     OPTIONAL_COLUMNS,
     PRESET_NAMES,
     SUPPORTED_INTERVALS,
+    register_secret,
 )
 
 _TOKEN_SPLIT_RE = re.compile(r"[\s,;]+")
@@ -273,7 +275,7 @@ class ProviderConfig:
 
 @dataclass(frozen=True)
 class EODHDExternalValidationConfig:
-    api_key: Optional[str] = None
+    api_key: Optional[str] = field(default=None, repr=False)
     base_url: str = DEFAULT_EODHD_BASE_URL
     timeout_seconds: float = DEFAULT_EODHD_TIMEOUT_SECONDS
     use_cache: bool = True
@@ -282,6 +284,7 @@ class EODHDExternalValidationConfig:
     allow_partial_coverage: bool = False
     max_retries: int = DEFAULT_EODHD_MAX_RETRIES
     backoff_seconds: float = DEFAULT_EODHD_BACKOFF_SECONDS
+    price_lookback_days: int = DEFAULT_EODHD_PRICE_LOOKBACK_DAYS
     exchange_hint: Optional[str] = None
     symbol_map_file: Optional[Path] = None
 
@@ -290,6 +293,7 @@ class EODHDExternalValidationConfig:
         if api_key == "":
             api_key = None
         object.__setattr__(self, "api_key", api_key)
+        register_secret(api_key)
 
         base_url = str(self.base_url or DEFAULT_EODHD_BASE_URL).strip().rstrip("/")
         if not base_url:
@@ -304,6 +308,8 @@ class EODHDExternalValidationConfig:
             raise RequestContractError("external_validation.eodhd.max_retries must be >= 1.")
         if float(self.backoff_seconds) < 0:
             raise RequestContractError("external_validation.eodhd.backoff_seconds must be >= 0.")
+        if int(self.price_lookback_days) < 1:
+            raise RequestContractError("external_validation.eodhd.price_lookback_days must be >= 1.")
         if self.cache_dir is not None:
             object.__setattr__(self, "cache_dir", Path(self.cache_dir).expanduser().resolve())
         exchange_hint = None if self.exchange_hint is None else str(self.exchange_hint).strip().upper()
@@ -324,6 +330,7 @@ class EODHDExternalValidationConfig:
             "allow_partial_coverage": bool(self.allow_partial_coverage),
             "max_retries": int(self.max_retries),
             "backoff_seconds": float(self.backoff_seconds),
+            "price_lookback_days": int(self.price_lookback_days),
             "exchange_hint": self.exchange_hint,
             "symbol_map_file": None
             if self.symbol_map_file is None
@@ -451,15 +458,26 @@ class DatasetRequest:
         return len(self.tickers)
 
     def to_dict(self) -> dict[str, object]:
-        payload = asdict(self)
-        payload["output_dir"] = str(self.output_dir.resolve())
-        payload["time_range"] = {
-            "mode": self.time_range.mode,
-            "start": self.time_range.start_iso,
-            "end": self.time_range.end_iso,
-            "years": self.time_range.years,
-            "reproducible": self.time_range.reproducible,
+        return {
+            "tickers": list(self.tickers),
+            "time_range": {
+                "mode": self.time_range.mode,
+                "start": self.time_range.start_iso,
+                "end": self.time_range.end_iso,
+                "years": self.time_range.years,
+                "reproducible": self.time_range.reproducible,
+            },
+            "output_dir": str(self.output_dir.resolve()),
+            "interval": self.interval,
+            "mode": self.mode,
+            "extras": list(self.extras),
+            "listing_preference": self.listing_preference,
+            "dq_mode": self.dq_mode,
+            "dq_market": self.dq_market,
+            "auto_adjust": bool(self.auto_adjust),
+            "actions": bool(self.actions),
+            "qlib_sanitization": bool(self.qlib_sanitization),
+            "filename_override": self.filename_override,
+            "provider": self.provider.to_dict(),
+            "external_validation": self.external_validation.to_dict(),
         }
-        payload["provider"] = self.provider.to_dict()
-        payload["external_validation"] = self.external_validation.to_dict()
-        return payload

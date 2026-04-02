@@ -60,7 +60,13 @@ def build_external_validation_service(
             symbol_map_file=config.eodhd.symbol_map_file,
         )
         return ExternalValidationService(
-            price_adapters=[EODHDPriceReferenceSource(client, symbol_resolver=symbol_resolver)],
+            price_adapters=[
+                EODHDPriceReferenceSource(
+                    client,
+                    symbol_resolver=symbol_resolver,
+                    price_lookback_days=config.eodhd.price_lookback_days,
+                )
+            ],
             event_adapters=[
                 EODHDCorporateActionsReferenceSource(
                     client,

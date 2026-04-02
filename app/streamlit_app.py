@@ -21,12 +21,16 @@ from dataset_core.settings import (
     DEFAULT_EODHD_BASE_URL,
     DEFAULT_EODHD_CACHE_TTL_SECONDS,
     DEFAULT_EODHD_MAX_RETRIES,
+    DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
     DEFAULT_EODHD_TIMEOUT_SECONDS,
     DEFAULT_OUTPUT_ROOT,
     DQ_MODES,
     LISTING_PREFERENCES,
     PRESET_NAMES,
     SUPPORTED_INTERVALS,
+    get_default_eodhd_api_key,
+    resolve_eodhd_api_key,
+    sanitize_secret_text,
 )
 from dataset_core.workspace_inventory import filter_workspace_runs, list_workspace_runs
 
@@ -65,6 +69,17 @@ def _sync_extras_from_preset(preset: str) -> None:
     st.session_state[state_key] = preset
 
 
+def resolve_requested_eodhd_api_key(
+    manual_api_key: str,
+    *,
+    external_validation_provider: str,
+) -> str | None:
+    return resolve_eodhd_api_key(
+        manual_api_key,
+        allow_env_fallback=str(external_validation_provider or "").strip().lower() == "eodhd",
+    )
+
+
 def _build_request_from_form(
     tickers_text: str,
     range_mode: str,
@@ -90,6 +105,7 @@ def _build_request_from_form(
     eodhd_allow_partial_coverage: bool = False,
     eodhd_max_retries: str = "",
     eodhd_backoff_seconds: str = "",
+    eodhd_price_lookback_days: str = "",
     provider_metadata_timeout: str = "",
     provider_metadata_candidate_limit: str = "",
     provider_context_cache_ttl_seconds: str = "",
@@ -153,6 +169,15 @@ def _build_request_from_form(
             raise ValueError(f"{label} debe ser > 0.")
         return value
 
+    effective_eodhd_api_key = resolve_requested_eodhd_api_key(
+        eodhd_api_key,
+        external_validation_provider=external_validation_provider,
+    )
+    if str(external_validation_provider or "").strip().lower() == "eodhd" and effective_eodhd_api_key is None:
+        raise ValueError(
+            "EODHD requiere una API key. Define EODHD_API_KEY en el .env de la raiz del proyecto o introduce una key manual para esta sesion."
+        )
+
     return DatasetRequest(
         tickers=tickers,
         time_range=time_range,
@@ -196,7 +221,7 @@ def _build_request_from_form(
             if not manual_events_file.strip()
             else Path(manual_events_file).expanduser().resolve(),
             eodhd=EODHDExternalValidationConfig(
-                api_key=None if not eodhd_api_key.strip() else eodhd_api_key.strip(),
+                api_key=effective_eodhd_api_key,
                 base_url=eodhd_base_url.strip() or DEFAULT_EODHD_BASE_URL,
                 timeout_seconds=_parse_optional_positive_float(
                     eodhd_timeout_seconds,
@@ -222,6 +247,11 @@ def _build_request_from_form(
                     "EODHD backoff",
                 )
                 or DEFAULT_EODHD_BACKOFF_SECONDS,
+                price_lookback_days=_parse_optional_positive_int(
+                    eodhd_price_lookback_days,
+                    "EODHD price lookback",
+                )
+                or DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
             ),
         ),
     )
@@ -579,14 +609,26 @@ def main() -> None:
             reference_dir = st.text_input("Directorio con CSVs de referencia", value="")
             manual_events_file = st.text_input("Fichero de eventos manuales", value="")
             if external_validation_provider == "eodhd":
+                has_default_eodhd_api_key = get_default_eodhd_api_key() is not None
                 eodhd_col_1, eodhd_col_2 = st.columns(2)
                 with eodhd_col_1:
-                    eodhd_api_key = st.text_input("EODHD API key", value="", type="password")
+                    eodhd_api_key = st.text_input(
+                        "EODHD API key (opcional si ya esta en .env)",
+                        value="",
+                        type="password",
+                    )
+                    if has_default_eodhd_api_key:
+                        st.caption("Si dejas este campo vacio, la aplicacion usara silenciosamente la key de `.env`.")
                     eodhd_base_url = st.text_input("EODHD base URL", value=DEFAULT_EODHD_BASE_URL)
                     eodhd_timeout_seconds = st.text_input("EODHD timeout (s)", value=str(DEFAULT_EODHD_TIMEOUT_SECONDS))
                     eodhd_cache_ttl_seconds = st.text_input(
                         "EODHD cache TTL (s)",
                         value=str(DEFAULT_EODHD_CACHE_TTL_SECONDS),
+                    )
+                    eodhd_price_lookback_days = st.text_input(
+                        "EODHD price lookback (dias)",
+                        value=str(DEFAULT_EODHD_PRICE_LOOKBACK_DAYS),
+                        help="Ventana maxima que se solicita a EODHD para validar precios. Util para el plan gratuito de 1 ano.",
                     )
                 with eodhd_col_2:
                     eodhd_use_cache = st.checkbox("Usar cache EODHD", value=True)
@@ -610,6 +652,7 @@ def main() -> None:
                 eodhd_allow_partial_coverage = False
                 eodhd_max_retries = ""
                 eodhd_backoff_seconds = ""
+                eodhd_price_lookback_days = ""
 
         _render_column_block(mode, qlib_sanitization)
         submitted = st.form_submit_button("Generar dataset", width="stretch")
@@ -641,6 +684,7 @@ def main() -> None:
                 eodhd_allow_partial_coverage=eodhd_allow_partial_coverage,
                 eodhd_max_retries=eodhd_max_retries,
                 eodhd_backoff_seconds=eodhd_backoff_seconds,
+                eodhd_price_lookback_days=eodhd_price_lookback_days,
                 provider_metadata_timeout=provider_metadata_timeout,
                 provider_metadata_candidate_limit=provider_metadata_candidate_limit,
                 provider_context_cache_ttl_seconds=provider_context_cache_ttl_seconds,
@@ -651,8 +695,8 @@ def main() -> None:
                 batch_result = get_orchestrator().run(request, execution_mode=execution_mode)
             st.session_state["last_batch_result"] = batch_result
         except Exception as exc:
-            st.error(f"Generacion fallida: {exc}")
-            st.exception(exc)
+            safe_message = sanitize_secret_text(str(exc)) or "Error no disponible."
+            st.error(f"Generacion fallida: {safe_message}")
 
     if "last_batch_result" in st.session_state:
         _render_results(st.session_state["last_batch_result"])

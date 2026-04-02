@@ -6,6 +6,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from threading import Lock
 
+from dataset_core.settings import sanitize_secret_text
+
 LOG_FILENAME = "dataset_factory.log"
 RUNTIME_LOGGER_NAME = "DatasetFactory.Runtime"
 _LOGGER_LOCK = Lock()
@@ -41,6 +43,14 @@ class RunLoggerHandle:
     log_path: Path
 
 
+class SafeLogFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return sanitize_secret_text(super().format(record)) or ""
+
+    def formatException(self, ei) -> str:
+        return sanitize_secret_text(super().formatException(ei)) or ""
+
+
 def _build_handler(log_path: Path) -> RotatingFileHandler:
     handler = RotatingFileHandler(
         log_path,
@@ -50,7 +60,7 @@ def _build_handler(log_path: Path) -> RotatingFileHandler:
     )
     handler.setLevel(logging.INFO)
     handler.setFormatter(
-        logging.Formatter(
+        SafeLogFormatter(
             "%(asctime)s | %(levelname)s | run_id=%(run_id)s | ticker=%(ticker)s | stage=%(stage)s | %(message)s"
         )
     )

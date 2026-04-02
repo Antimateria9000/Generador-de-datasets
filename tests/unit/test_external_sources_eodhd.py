@@ -113,6 +113,29 @@ def test_eodhd_client_raises_timeout_as_network_error(tmp_path):
         client.fetch_prices("AAPL.US", "2025-01-02", "2025-01-10")
 
 
+def test_eodhd_client_redacts_api_token_from_transport_errors(tmp_path):
+    session = _FakeSession(
+        [
+            requests.RequestException(
+                "boom https://eodhd.test/api/eod/AAPL.US?api_token=transport-secret&fmt=json"
+            )
+        ]
+    )
+    client = EODHDClient(
+        api_key="transport-secret",
+        session=session,
+        cache_dir=tmp_path,
+        use_cache=False,
+        max_retries=1,
+    )
+
+    with pytest.raises(ExternalSourceNetworkError) as exc_info:
+        client.fetch_prices("AAPL.US", "2025-01-02", "2025-01-10")
+
+    assert "transport-secret" not in str(exc_info.value)
+    assert "***redacted***" in str(exc_info.value)
+
+
 def test_eodhd_client_raises_rate_limit_error_on_429(tmp_path):
     session = _FakeSession([_FakeResponse(429, text="Too Many Requests")])
     client = EODHDClient(

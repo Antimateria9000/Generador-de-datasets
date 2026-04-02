@@ -27,6 +27,7 @@ from dataset_core.settings import (
     DEFAULT_EODHD_CACHE_TTL_SECONDS,
     DEFAULT_EODHD_MAX_RETRIES,
     DEFAULT_EODHD_TIMEOUT_SECONDS,
+    sanitize_secret_text,
 )
 
 _EMPTY_PRICE_FRAME = pd.DataFrame(
@@ -168,18 +169,18 @@ def _extract_error_message(response: requests.Response) -> str:
     try:
         payload = response.json()
     except ValueError:
-        return text or f"HTTP {response.status_code}"
+        return sanitize_secret_text(text or f"HTTP {response.status_code}") or ""
 
     if isinstance(payload, dict):
         for key in ("error", "errors", "message"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip()
+                return sanitize_secret_text(value.strip()) or ""
             if isinstance(value, list) and value:
-                return "; ".join(str(item).strip() for item in value if str(item).strip())
+                return sanitize_secret_text("; ".join(str(item).strip() for item in value if str(item).strip())) or ""
     if isinstance(payload, str) and payload.strip():
-        return payload.strip()
-    return text or f"HTTP {response.status_code}"
+        return sanitize_secret_text(payload.strip()) or ""
+    return sanitize_secret_text(text or f"HTTP {response.status_code}") or ""
 
 
 def _raise_http_error(response: requests.Response) -> None:
@@ -369,7 +370,8 @@ class EODHDClient:
                     f"EODHD request timed out after {self.timeout_seconds:.2f}s for {endpoint}."
                 )
             except requests.RequestException as exc:
-                last_error = ExternalSourceNetworkError(f"EODHD request failed for {endpoint}: {exc}")
+                safe_message = sanitize_secret_text(str(exc)) or "unknown transport error"
+                last_error = ExternalSourceNetworkError(f"EODHD request failed for {endpoint}: {safe_message}")
             else:
                 if response.status_code >= 400:
                     try:
@@ -441,9 +443,16 @@ class EODHDClient:
 
 
 class EODHDPriceReferenceSource:
-    def __init__(self, client: EODHDClient, *, symbol_resolver: EODHDSymbolResolver | None = None) -> None:
+    def __init__(
+        self,
+        client: EODHDClient,
+        *,
+        symbol_resolver: EODHDSymbolResolver | None = None,
+        price_lookback_days: int = 365,
+    ) -> None:
         self.client = client
         self.symbol_resolver = symbol_resolver or EODHDSymbolResolver()
+        self.price_lookback_days = max(1, int(price_lookback_days))
 
     def name(self) -> str:
         return "eodhd_prices"
@@ -451,15 +460,35 @@ class EODHDPriceReferenceSource:
     def validation_scope(self) -> Literal["price"]:
         return "price"
 
+    def _resolve_effective_window(self, start: str | None, end: str | None) -> tuple[str | None, str | None, bool]:
+        end_ts = pd.to_datetime(end, utc=True, errors="coerce")
+        if pd.isna(end_ts):
+            end_ts = pd.Timestamp.now(tz="UTC")
+
+        requested_start_ts = pd.to_datetime(start, utc=True, errors="coerce")
+        limited_start_ts = end_ts - pd.Timedelta(days=self.price_lookback_days)
+
+        if pd.isna(requested_start_ts):
+            effective_start_ts = limited_start_ts
+            partial_coverage = True
+        else:
+            effective_start_ts = max(requested_start_ts, limited_start_ts)
+            partial_coverage = bool(requested_start_ts < effective_start_ts)
+
+        effective_start = pd.Timestamp(effective_start_ts).tz_convert("UTC").strftime("%Y-%m-%d")
+        effective_end = pd.Timestamp(end_ts).tz_convert("UTC").strftime("%Y-%m-%d")
+        return effective_start, effective_end, partial_coverage
+
     def fetch_reference(self, symbol: str, start: str | None, end: str | None) -> pd.DataFrame:
         resolution = self.symbol_resolver.resolve_candidates(symbol)
         errors: list[str] = []
         response: EODHDPayload | None = None
         frame = _EMPTY_PRICE_FRAME.copy()
         provider_symbol = resolution.requested_symbol
+        effective_start, effective_end, partial_coverage = self._resolve_effective_window(start, end)
         for candidate in resolution.candidates:
             try:
-                response = self.client.fetch_prices(candidate, start, end)
+                response = self.client.fetch_prices(candidate, effective_start, effective_end)
             except ExternalSourceNotFoundError as exc:
                 errors.append(f"{candidate}: {exc}")
                 continue
@@ -487,6 +516,12 @@ class EODHDPriceReferenceSource:
                 "endpoint": response.endpoint,
                 "url": response.url,
                 "cache_status": response.cache_status,
+                "requested_start": start,
+                "requested_end": end,
+                "effective_start": effective_start,
+                "effective_end": effective_end,
+                "price_lookback_days": int(self.price_lookback_days),
+                "partial_coverage": partial_coverage,
                 "client_metrics": dict(self.client.metrics),
             },
         )

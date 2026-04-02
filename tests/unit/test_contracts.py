@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -7,6 +8,8 @@ import pytest
 
 from dataset_core.contracts import (
     DatasetRequest,
+    EODHDExternalValidationConfig,
+    ExternalValidationConfig,
     RequestContractError,
     TemporalRange,
     load_tickers_from_file,
@@ -70,3 +73,23 @@ def test_dataset_request_rejects_forbidden_qlib_extras():
             mode="qlib",
             extras=["adj_close"],
         )
+
+
+def test_eodhd_config_repr_and_request_serialization_do_not_expose_api_key():
+    secret = "unit-test-secret"
+    request = DatasetRequest(
+        tickers=["MSFT"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        external_validation=ExternalValidationConfig(
+            provider="eodhd",
+            enabled=True,
+            eodhd=EODHDExternalValidationConfig(api_key=secret),
+        ),
+    )
+
+    payload = request.to_dict()
+    serialized = json.dumps(payload, sort_keys=True)
+
+    assert secret not in repr(request.external_validation.eodhd)
+    assert secret not in serialized
+    assert payload["external_validation"]["eodhd"]["api_key_configured"] is True

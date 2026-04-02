@@ -633,15 +633,32 @@ class AB3DataQualitySuite:
 
         volume = pd.to_numeric(df["Volume"], errors="coerce").astype("float64")
         z_rob = self._robust_z(np.log1p(volume), self.volume_window)
-        high = z_rob.abs() > self.volume_zscore_thr
-        if high.any():
-            count = int(high.sum())
-            severity = Severity.ERROR if count > max(1, int(0.01 * len(volume))) else Severity.WARNING
+        high_spikes = z_rob > self.volume_zscore_thr
+        low_spikes = z_rob < -self.volume_zscore_thr
+        anomaly_count = int(high_spikes.sum() + low_spikes.sum())
+        if anomaly_count:
+            low_spike_count = int(low_spikes.sum())
+            high_spike_count = int(high_spikes.sum())
+            severity = Severity.ERROR if low_spike_count > max(1, int(0.01 * len(volume))) else Severity.WARNING
+            if low_spike_count and high_spike_count:
+                message = (
+                    f"{anomaly_count} días con anomalías robustas de volumen "
+                    f"({high_spike_count} picos altos, {low_spike_count} colapsos bajos)."
+                )
+            elif low_spike_count:
+                message = f"{low_spike_count} días con colapsos robustos de volumen (z_rob < -{self.volume_zscore_thr})."
+            else:
+                message = f"{high_spike_count} días con picos altos de volumen (z_rob > {self.volume_zscore_thr})."
             self._push(
                 "volume_zscore_robust",
                 severity,
-                f"{count} días con |z_rob(log1p(volume))| > {self.volume_zscore_thr}",
-                {"count": count, "max_z": float(z_rob.abs().max(skipna=True))},
+                message,
+                {
+                    "count": anomaly_count,
+                    "high_spike_count": high_spike_count,
+                    "low_spike_count": low_spike_count,
+                    "max_z": float(z_rob.abs().max(skipna=True)),
+                },
             )
 
         q01 = volume.rolling(self.volume_window, min_periods=max(20, self.volume_window // 2)).quantile(0.01)
@@ -808,22 +825,22 @@ class AB3DataQualitySuite:
         try:
             idx = df.index
             if getattr(idx, "tz", None) is None:
-                start_utc = pd.Timestamp(idx.min()).tz_localize("UTC")
-                end_utc = pd.Timestamp(idx.max()).tz_localize("UTC")
+                start_session = pd.Timestamp(idx.min()).normalize()
+                end_session = pd.Timestamp(idx.max()).normalize()
                 idx_naive_norm = idx.normalize()
             else:
-                start_utc = idx.min().tz_convert("UTC")
-                end_utc = idx.max().tz_convert("UTC")
+                start_session = idx.min().tz_convert("UTC").tz_localize(None).normalize()
+                end_session = idx.max().tz_convert("UTC").tz_localize(None).normalize()
                 idx_naive_norm = idx.tz_convert("UTC").tz_localize(None).normalize()
 
             sessions_norm = None
             if xc is not None:
                 cal = xc.get_calendar(mkt)
-                sess = cal.sessions_in_range(start_utc, end_utc)
+                sess = cal.sessions_in_range(start_session, end_session)
                 sessions_norm = sess.tz_localize(None).normalize() if getattr(sess, "tz", None) else sess.normalize()
             elif pmc is not None:
                 cal = pmc.get_calendar(mkt)
-                sched = cal.schedule(start_date=start_utc.date(), end_date=end_utc.date())
+                sched = cal.schedule(start_date=start_session.date(), end_date=end_session.date())
                 sess = pd.DatetimeIndex(sched.index)
                 sessions_norm = sess.normalize()
 
@@ -948,5 +965,3 @@ class AB3DataQualitySuite:
         path = output_dir / f"{safe_symbol}_{first}_{last}.dq.json"
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         return str(path)
-
-

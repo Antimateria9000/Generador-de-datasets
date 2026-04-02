@@ -37,6 +37,7 @@ desktop.ini
 # Variables de entorno / secretos
 .env
 .env.*
+!.env.example
 *.env
 
 # Datos pesados o temporales

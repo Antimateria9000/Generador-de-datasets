@@ -12,6 +12,8 @@ from uuid import uuid4
 
 import pandas as pd
 
+from dataset_core.settings import sanitize_secret_text
+
 
 def _safe_unlink(path: Path | None) -> None:
     if path is None:
@@ -44,7 +46,7 @@ def make_json_safe(value: Any) -> Any:
     if value is None:
         return None
     if isinstance(value, str):
-        return value
+        return sanitize_secret_text(value)
     if isinstance(value, bool):
         return bool(value)
     if isinstance(value, int):
@@ -103,9 +105,9 @@ def make_json_safe(value: Any) -> Any:
         pass
 
     if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
+        return sanitize_secret_text(value.decode("utf-8", errors="replace"))
 
-    return str(value)
+    return sanitize_secret_text(str(value))
 
 
 def _atomic_replace(source: Path, destination: Path) -> None:
@@ -167,13 +169,14 @@ def write_json(path: Path, payload: dict[str, Any], temp_dir: Path | None = None
 
 
 def write_text(path: Path, content: str, temp_dir: Path | None = None) -> None:
+    safe_content = sanitize_secret_text(str(content)) or ""
     temp_path = _temp_path(path, temp_dir=temp_dir)
-    temp_path.write_text(str(content), encoding="utf-8")
+    temp_path.write_text(safe_content, encoding="utf-8")
     try:
         _atomic_replace(temp_path, path)
     except PermissionError:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(str(content), encoding="utf-8")
+        path.write_text(safe_content, encoding="utf-8")
         _safe_unlink(temp_path)
 
 

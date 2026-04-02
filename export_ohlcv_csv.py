@@ -16,17 +16,20 @@ from dataset_core import (
     parse_extras,
     resolve_ticker_inputs,
 )
+from dataset_core.logging_runtime import SafeLogFormatter
 from dataset_core.settings import (
     DEFAULT_EODHD_BACKOFF_SECONDS,
     DEFAULT_EODHD_BASE_URL,
     DEFAULT_EODHD_CACHE_TTL_SECONDS,
     DEFAULT_EODHD_MAX_RETRIES,
+    DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
     DEFAULT_EODHD_TIMEOUT_SECONDS,
     DEFAULT_OUTPUT_ROOT,
     DQ_MODES,
     LISTING_PREFERENCES,
     PRESET_NAMES,
     SUPPORTED_INTERVALS,
+    resolve_eodhd_api_key,
 )
 
 LOGGER_NAME = "DatasetFactory.CLI"
@@ -128,6 +131,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Base backoff in seconds for EODHD validation retries.",
     )
+    parser.add_argument(
+        "--eodhd-price-lookback-days",
+        default=None,
+        type=int,
+        help="Maximum trailing price history window requested from EODHD for external validation.",
+    )
     parser.add_argument("--provider-max-workers", default=None, type=int, help="Override provider max_workers.")
     parser.add_argument("--provider-retries", default=None, type=int, help="Override provider retries.")
     parser.add_argument("--provider-timeout", default=None, type=float, help="Override provider timeout in seconds.")
@@ -189,10 +198,37 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def configure_logging(level: str) -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(SafeLogFormatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
     logging.basicConfig(
         level=getattr(logging, str(level).upper(), logging.INFO),
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        handlers=[handler],
+        force=True,
     )
+
+
+def resolve_requested_eodhd_api_key(
+    manual_api_key: Optional[str],
+    *,
+    external_validation_provider: Optional[str],
+) -> Optional[str]:
+    normalized_provider = str(external_validation_provider or "").strip().lower()
+    return resolve_eodhd_api_key(
+        manual_api_key,
+        allow_env_fallback=normalized_provider == "eodhd",
+    )
+
+
+def _assert_eodhd_credentials_available(
+    effective_api_key: Optional[str],
+    *,
+    external_validation_provider: Optional[str],
+) -> None:
+    normalized_provider = str(external_validation_provider or "").strip().lower()
+    if normalized_provider == "eodhd" and effective_api_key is None:
+        raise RequestContractError(
+            "EODHD external validation requires an API key. Pass --eodhd-api-key or define EODHD_API_KEY in the project root .env."
+        )
 
 
 def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
@@ -223,6 +259,14 @@ def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
         batch_max_workers=args.provider_batch_max_workers,
         batch_chunk_size=args.provider_batch_chunk_size,
     )
+    effective_eodhd_api_key = resolve_requested_eodhd_api_key(
+        args.eodhd_api_key,
+        external_validation_provider=args.external_validation_provider,
+    )
+    _assert_eodhd_credentials_available(
+        effective_eodhd_api_key,
+        external_validation_provider=args.external_validation_provider,
+    )
     external_validation = ExternalValidationConfig(
         enabled=True if args.external_validation_enabled else None,
         provider=args.external_validation_provider,
@@ -231,7 +275,7 @@ def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
         if not args.manual_events_file
         else Path(args.manual_events_file).expanduser().resolve(),
         eodhd=EODHDExternalValidationConfig(
-            api_key=args.eodhd_api_key,
+            api_key=effective_eodhd_api_key,
             base_url=args.eodhd_base_url or DEFAULT_EODHD_BASE_URL,
             timeout_seconds=args.eodhd_timeout_seconds or DEFAULT_EODHD_TIMEOUT_SECONDS,
             use_cache=not bool(args.eodhd_no_cache),
@@ -242,6 +286,7 @@ def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
             allow_partial_coverage=bool(args.eodhd_allow_partial_coverage),
             max_retries=args.eodhd_max_retries or DEFAULT_EODHD_MAX_RETRIES,
             backoff_seconds=args.eodhd_backoff_seconds or DEFAULT_EODHD_BACKOFF_SECONDS,
+            price_lookback_days=args.eodhd_price_lookback_days or DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
         ),
     )
 
@@ -333,6 +378,7 @@ def export_one_ticker(
     eodhd_allow_partial_coverage: bool = False,
     eodhd_max_retries: Optional[int] = None,
     eodhd_backoff_seconds: Optional[float] = None,
+    eodhd_price_lookback_days: Optional[int] = None,
     provider_max_workers: Optional[int] = None,
     provider_retries: Optional[int] = None,
     provider_timeout: Optional[float] = None,
@@ -346,6 +392,14 @@ def export_one_ticker(
     provider_batch_chunk_size: Optional[int] = None,
     execution_mode: str = "concurrent",
 ) -> Path:
+    effective_eodhd_api_key = resolve_requested_eodhd_api_key(
+        eodhd_api_key,
+        external_validation_provider=external_validation_provider,
+    )
+    _assert_eodhd_credentials_available(
+        effective_eodhd_api_key,
+        external_validation_provider=external_validation_provider,
+    )
     request = DatasetRequest(
         tickers=[ticker],
         time_range=TemporalRange.from_inputs(
@@ -386,7 +440,7 @@ def export_one_ticker(
             if not manual_events_file
             else Path(manual_events_file).expanduser().resolve(),
             eodhd=EODHDExternalValidationConfig(
-                api_key=eodhd_api_key,
+                api_key=effective_eodhd_api_key,
                 base_url=eodhd_base_url or DEFAULT_EODHD_BASE_URL,
                 timeout_seconds=eodhd_timeout_seconds or DEFAULT_EODHD_TIMEOUT_SECONDS,
                 use_cache=bool(eodhd_use_cache),
@@ -397,6 +451,7 @@ def export_one_ticker(
                 allow_partial_coverage=bool(eodhd_allow_partial_coverage),
                 max_retries=eodhd_max_retries or DEFAULT_EODHD_MAX_RETRIES,
                 backoff_seconds=eodhd_backoff_seconds or DEFAULT_EODHD_BACKOFF_SECONDS,
+                price_lookback_days=eodhd_price_lookback_days or DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
             ),
         ),
     )
@@ -411,6 +466,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         batch_result = run_cli(argv=argv)
     except RequestContractError as exc:
         logger.error("%s", exc)
+        return 1
+    except Exception:
+        logger.exception("Unexpected failure during CLI execution.")
         return 1
 
     counts = batch_result.status_counts

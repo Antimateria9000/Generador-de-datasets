@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+import re
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import Final
 
 APP_NAME: Final[str] = "Dataset Factory"
@@ -24,6 +28,7 @@ DEFAULT_EODHD_TIMEOUT_SECONDS: Final[float] = 10.0
 DEFAULT_EODHD_CACHE_TTL_SECONDS: Final[int] = 24 * 60 * 60
 DEFAULT_EODHD_MAX_RETRIES: Final[int] = 2
 DEFAULT_EODHD_BACKOFF_SECONDS: Final[float] = 0.5
+DEFAULT_EODHD_PRICE_LOOKBACK_DAYS: Final[int] = 365
 
 SUPPORTED_INTERVALS: Final[tuple[str, ...]] = (
     "1m",
@@ -79,6 +84,16 @@ WORKSPACE_DIRECTORIES: Final[tuple[Path, ...]] = (
     WORKSPACE_LOGS_DIR,
     WORKSPACE_AUDITS_DIR,
 )
+REDACTED_SECRET: Final[str] = "***redacted***"
+
+_SECRET_QUERY_PARAM_RE = re.compile(
+    r"(?i)([?&](?:api_token|api_key|apikey|access_token|token)=)[^&#\s]+"
+)
+_SECRET_ENV_ASSIGNMENT_RE = re.compile(
+    r"(?im)(\b[A-Z][A-Z0-9_]*(?:API_KEY|TOKEN|SECRET)\b\s*=\s*)([^\r\n]+)"
+)
+_REGISTERED_SECRETS: set[str] = set()
+_REGISTERED_SECRETS_LOCK = Lock()
 
 
 def ensure_directory(path: Path) -> Path:
@@ -140,3 +155,142 @@ def utc_now_token() -> str:
 
 def utc_now_token_microseconds() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+
+
+def normalize_secret(value: str | None) -> str | None:
+    normalized = None if value is None else str(value).strip()
+    return normalized or None
+
+
+def register_secret(secret: str | None) -> None:
+    normalized = normalize_secret(secret)
+    if normalized is None:
+        return
+    with _REGISTERED_SECRETS_LOCK:
+        _REGISTERED_SECRETS.add(normalized)
+
+
+def mask_secret(secret: str | None) -> str | None:
+    normalized = normalize_secret(secret)
+    if normalized is None:
+        return None
+    if len(normalized) <= 8:
+        return REDACTED_SECRET
+    return f"{normalized[:4]}...{normalized[-4:]}"
+
+
+def sanitize_secret_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    sanitized = str(value)
+    if not sanitized:
+        return sanitized
+
+    sanitized = _SECRET_QUERY_PARAM_RE.sub(rf"\1{REDACTED_SECRET}", sanitized)
+    sanitized = _SECRET_ENV_ASSIGNMENT_RE.sub(rf"\1{REDACTED_SECRET}", sanitized)
+
+    with _REGISTERED_SECRETS_LOCK:
+        registered = sorted(_REGISTERED_SECRETS, key=len, reverse=True)
+    for secret in registered:
+        sanitized = sanitized.replace(secret, REDACTED_SECRET)
+    return sanitized
+
+
+def _parse_env_value(raw_value: str) -> str:
+    value = str(raw_value).strip()
+    if not value:
+        return ""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    comment_index = value.find(" #")
+    if comment_index >= 0:
+        return value[:comment_index].rstrip()
+    return value
+
+
+def _load_env_with_python_dotenv(env_path: Path) -> bool:
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        return False
+
+    load_dotenv(dotenv_path=env_path, override=False, encoding="utf-8")
+    return True
+
+
+def _load_env_without_python_dotenv(env_path: Path) -> None:
+    content = env_path.read_text(encoding="utf-8")
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        name, raw_value = line.split("=", 1)
+        env_name = str(name).strip()
+        if not env_name:
+            continue
+        os.environ.setdefault(env_name, _parse_env_value(raw_value))
+
+
+@lru_cache(maxsize=None)
+def _load_local_env_cached(project_root: str) -> str | None:
+    env_path = Path(project_root).expanduser().resolve() / ".env"
+    if not env_path.is_file():
+        return None
+    if not _load_env_with_python_dotenv(env_path):
+        _load_env_without_python_dotenv(env_path)
+    return str(env_path)
+
+
+def load_local_env(project_root: Path | None = None) -> Path | None:
+    root = Path(project_root or PROJECT_ROOT).expanduser().resolve()
+    loaded_path = _load_local_env_cached(str(root))
+    return None if loaded_path is None else Path(loaded_path)
+
+
+def reset_local_env_cache() -> None:
+    _load_local_env_cached.cache_clear()
+
+
+def get_env_secret(name: str, *, project_root: Path | None = None) -> str | None:
+    load_local_env(project_root=project_root)
+    secret = normalize_secret(os.getenv(name))
+    register_secret(secret)
+    return secret
+
+
+def resolve_env_secret(
+    name: str,
+    manual_value: str | None = None,
+    *,
+    allow_env_fallback: bool = True,
+    project_root: Path | None = None,
+) -> str | None:
+    manual_secret = normalize_secret(manual_value)
+    if manual_secret is not None:
+        register_secret(manual_secret)
+        return manual_secret
+    if not allow_env_fallback:
+        return None
+    return get_env_secret(name, project_root=project_root)
+
+
+def get_default_eodhd_api_key(*, project_root: Path | None = None) -> str | None:
+    return get_env_secret("EODHD_API_KEY", project_root=project_root)
+
+
+def resolve_eodhd_api_key(
+    manual_value: str | None = None,
+    *,
+    allow_env_fallback: bool = True,
+    project_root: Path | None = None,
+) -> str | None:
+    return resolve_env_secret(
+        "EODHD_API_KEY",
+        manual_value,
+        allow_env_fallback=allow_env_fallback,
+        project_root=project_root,
+    )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-_PARTIAL_EXTERNAL_STATUSES = {None, "", "not_validated", "skipped"}
+_PARTIAL_EXTERNAL_STATUSES = {None, "", "not_validated", "skipped", "passed_partial"}
 _PARTIAL_INTERNAL_STATUSES = {None, "", "passed_with_warnings", "skipped", "unsupported"}
 _EXTERNAL_STATUS_MESSAGES = {
     "adapter_error": "External validation adapter failed.",
