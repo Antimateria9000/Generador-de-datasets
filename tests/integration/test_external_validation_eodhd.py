@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pandas as pd
+
 from dataset_core.batch_orchestrator import BatchOrchestrator
 from dataset_core.contracts import (
     DatasetRequest,
@@ -34,6 +36,8 @@ def _price_payload_from_frame(frame):
 
 def test_external_validation_eodhd_provider_integrates_with_batch_orchestrator(tmp_path, patch_market_context, monkeypatch):
     frame = make_provider_frame("MSFT")
+    start = str(frame["date"].min().date())
+    end = str((frame["date"].max() + pd.Timedelta(days=1)).date())
 
     class _MockEODHDClient:
         def __init__(self, **_kwargs) -> None:
@@ -70,7 +74,7 @@ def test_external_validation_eodhd_provider_integrates_with_batch_orchestrator(t
     orchestrator = BatchOrchestrator(export_service=export_service)
     request = DatasetRequest(
         tickers=["MSFT"],
-        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        time_range=TemporalRange.from_inputs(years=None, start=start, end=end, interval="1d"),
         output_dir=tmp_path,
         dq_mode="off",
         external_validation=ExternalValidationConfig(
@@ -84,7 +88,9 @@ def test_external_validation_eodhd_provider_integrates_with_batch_orchestrator(t
     result = batch_result.results[0]
     report = json.loads(result.artifacts.external_json.read_text(encoding="utf-8"))
 
-    assert result.external_validation_status == "passed"
+    assert result.external_validation_status == "passed_partial"
+    assert result.external_validation_coverage_status == "partial"
+    assert result.external_validation_comparison_status == "passed"
     assert report["adapter_reports"][0]["source_metadata"]["provider"] == "eodhd"
     assert report["adapter_reports"][0]["source_metadata"]["provider_symbol"] == "MSFT.US"
 

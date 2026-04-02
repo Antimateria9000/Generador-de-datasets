@@ -25,10 +25,12 @@ from dataset_core.settings import (
     DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
     DEFAULT_EODHD_TIMEOUT_SECONDS,
     DEFAULT_OUTPUT_ROOT,
+    DEFAULT_YFINANCE_CACHE_MODE,
     DQ_MODES,
     LISTING_PREFERENCES,
     PRESET_NAMES,
     SUPPORTED_INTERVALS,
+    YFINANCE_CACHE_MODES,
     resolve_eodhd_api_key,
 )
 
@@ -140,6 +142,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider-max-workers", default=None, type=int, help="Override provider max_workers.")
     parser.add_argument("--provider-retries", default=None, type=int, help="Override provider retries.")
     parser.add_argument("--provider-timeout", default=None, type=float, help="Override provider timeout in seconds.")
+    parser.add_argument(
+        "--provider-cache-mode",
+        default=DEFAULT_YFINANCE_CACHE_MODE,
+        choices=YFINANCE_CACHE_MODES,
+        help="yfinance cache mode: shared, process, run or off.",
+    )
     parser.add_argument(
         "--provider-metadata-timeout",
         default=None,
@@ -253,6 +261,7 @@ def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
         metadata_timeout=args.provider_metadata_timeout,
         min_delay=args.provider_min_delay,
         max_intraday_lookback_days=args.provider_max_intraday_lookback_days,
+        cache_mode=args.provider_cache_mode,
         allow_partial_intraday=args.provider_allow_partial_intraday,
         metadata_candidate_limit=args.provider_metadata_candidate_limit,
         context_cache_ttl_seconds=args.provider_context_cache_ttl_seconds,
@@ -385,6 +394,7 @@ def export_one_ticker(
     provider_metadata_timeout: Optional[float] = None,
     provider_min_delay: Optional[float] = None,
     provider_max_intraday_lookback_days: Optional[int] = None,
+    provider_cache_mode: str = DEFAULT_YFINANCE_CACHE_MODE,
     provider_allow_partial_intraday: bool = False,
     provider_metadata_candidate_limit: Optional[int] = None,
     provider_context_cache_ttl_seconds: Optional[int] = None,
@@ -426,6 +436,7 @@ def export_one_ticker(
             metadata_timeout=provider_metadata_timeout,
             min_delay=provider_min_delay,
             max_intraday_lookback_days=provider_max_intraday_lookback_days,
+            cache_mode=provider_cache_mode,
             allow_partial_intraday=provider_allow_partial_intraday,
             metadata_candidate_limit=provider_metadata_candidate_limit,
             context_cache_ttl_seconds=provider_context_cache_ttl_seconds,

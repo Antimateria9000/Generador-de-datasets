@@ -86,6 +86,7 @@ def test_streamlit_helper_builds_request_with_runtime_controls(monkeypatch, tmp_
         output_dir=str(tmp_path),
         reference_dir="",
         manual_events_file="",
+        provider_cache_mode="run",
         provider_metadata_timeout="1.5",
         provider_metadata_candidate_limit="2",
         provider_context_cache_ttl_seconds="600",
@@ -93,6 +94,7 @@ def test_streamlit_helper_builds_request_with_runtime_controls(monkeypatch, tmp_
         provider_batch_chunk_size="2",
     )
 
+    assert request.provider.cache_mode == "run"
     assert request.provider.metadata_timeout == 1.5
     assert request.provider.metadata_candidate_limit == 2
     assert request.provider.context_cache_ttl_seconds == 600

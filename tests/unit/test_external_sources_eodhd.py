@@ -243,6 +243,88 @@ def test_eodhd_price_source_attaches_observable_metadata(tmp_path):
     assert metadata["candidates_tried"] == ["MSFT", "MSFT.US"]
 
 
+def test_eodhd_price_source_applies_local_temporal_filtering_with_end_exclusive():
+    class _Client:
+        def __init__(self) -> None:
+            self.metrics = {"request_count": 1, "cache_hits": 0, "cache_misses": 1}
+
+        def fetch_prices(self, symbol, start, end):
+            return EODHDPayload(
+                payload=[
+                    {
+                        "date": "2024-01-01",
+                        "open": 10,
+                        "high": 10,
+                        "low": 10,
+                        "close": 10,
+                        "adjusted_close": 10,
+                        "volume": 100,
+                    },
+                    {
+                        "date": "2024-01-02",
+                        "open": 11,
+                        "high": 11,
+                        "low": 11,
+                        "close": 11,
+                        "adjusted_close": 11,
+                        "volume": 110,
+                    },
+                    {
+                        "date": "2024-01-03",
+                        "open": 12,
+                        "high": 12,
+                        "low": 12,
+                        "close": 12,
+                        "adjusted_close": 12,
+                        "volume": 120,
+                    },
+                ],
+                url="https://eodhd.test/api/eod/MSFT.US?api_token=%2A%2A%2A",
+                cache_status="miss",
+                endpoint="/api/eod/MSFT.US",
+            )
+
+    source = EODHDPriceReferenceSource(_Client(), price_lookback_days=3650)
+
+    frame = source.fetch_reference("MSFT.US", "2024-01-02", "2024-01-03")
+
+    assert frame["date"].dt.strftime("%Y-%m-%d").tolist() == ["2024-01-02"]
+    assert extract_source_metadata(frame)["requested_start"] == "2024-01-02"
+
+
+def test_eodhd_price_source_preserves_metadata_even_when_local_filter_yields_no_rows():
+    class _Client:
+        def __init__(self) -> None:
+            self.metrics = {"request_count": 1, "cache_hits": 0, "cache_misses": 1}
+
+        def fetch_prices(self, symbol, start, end):
+            return EODHDPayload(
+                payload=[
+                    {
+                        "date": "2024-01-01",
+                        "open": 10,
+                        "high": 10,
+                        "low": 10,
+                        "close": 10,
+                        "adjusted_close": 10,
+                        "volume": 100,
+                    }
+                ],
+                url="https://eodhd.test/api/eod/MSFT.US?api_token=%2A%2A%2A",
+                cache_status="miss",
+                endpoint="/api/eod/MSFT.US",
+            )
+
+    source = EODHDPriceReferenceSource(_Client(), price_lookback_days=3650)
+
+    frame = source.fetch_reference("MSFT.US", "2024-02-01", "2024-02-02")
+    metadata = extract_source_metadata(frame)
+
+    assert frame.empty
+    assert metadata["provider"] == "eodhd"
+    assert metadata["scope"] == "price"
+
+
 def test_eodhd_corporate_actions_source_allows_partial_coverage_when_configured():
     class _PartialClient:
         def __init__(self) -> None:
@@ -267,6 +349,37 @@ def test_eodhd_corporate_actions_source_allows_partial_coverage_when_configured(
     assert frame.loc[0, "stock_splits"] == pytest.approx(4.0)
     assert metadata["partial_coverage"] is True
     assert metadata["coverage_notes"]
+
+
+def test_eodhd_corporate_actions_source_applies_local_temporal_filtering_with_end_exclusive():
+    class _Client:
+        def __init__(self) -> None:
+            self.metrics = {"request_count": 2, "cache_hits": 0, "cache_misses": 2}
+
+        def fetch_dividends(self, symbol, start, end):
+            return EODHDPayload(
+                payload=[
+                    {"date": "2024-01-01", "value": 0.4},
+                    {"date": "2024-01-02", "value": 0.5},
+                ],
+                url="https://eodhd.example/div",
+                cache_status="miss",
+                endpoint="/api/div/MSFT.US",
+            )
+
+        def fetch_splits(self, symbol, start, end):
+            return EODHDPayload(
+                payload=[{"date": "2024-01-03", "split": "2/1"}],
+                url="https://eodhd.example/splits",
+                cache_status="miss",
+                endpoint="/api/splits/MSFT.US",
+            )
+
+    source = EODHDCorporateActionsReferenceSource(_Client(), allow_partial_coverage=True)
+
+    frame = source.fetch_events("MSFT.US", "2024-01-02", "2024-01-03")
+
+    assert frame["date"].dt.strftime("%Y-%m-%d").tolist() == ["2024-01-02"]
 
 
 def test_parse_eodhd_prices_rejects_invalid_payload_shape():

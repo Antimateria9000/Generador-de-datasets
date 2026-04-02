@@ -4,7 +4,7 @@ import pandas as pd
 from pandas.testing import assert_frame_equal
 
 from dataset_core.acquisition import AcquisitionService
-from dataset_core.contracts import DatasetRequest, TemporalRange
+from dataset_core.contracts import DatasetRequest, ProviderConfig, TemporalRange
 from providers.yfinance_provider import (
     DownloadAttempt,
     FetchMetadata,
@@ -40,6 +40,87 @@ def test_acquisition_service_passes_effective_workspace_cache_dir(tmp_path):
     )
 
     assert captured_kwargs["cache_dir"] == (tmp_path / "cache" / "yfinance").resolve()
+
+
+def test_acquisition_service_uses_process_scoped_cache_dir_when_requested(tmp_path):
+    captured_kwargs = {}
+
+    class _Provider:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+        def get_history_bundle(self, **kwargs):
+            return make_fetch_result("MSFT", make_provider_frame("MSFT"))
+
+    request = DatasetRequest(
+        tickers=["MSFT"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        output_dir=tmp_path,
+        provider=ProviderConfig(cache_mode="process"),
+    )
+
+    AcquisitionService(provider_factory=_Provider).fetch(
+        symbol="MSFT",
+        request=request,
+        auto_adjust=False,
+        actions=True,
+    )
+
+    cache_dir = captured_kwargs["cache_dir"]
+    assert cache_dir.parent == (tmp_path / "cache" / "yfinance").resolve()
+    assert cache_dir.name.startswith("process-")
+
+
+def test_acquisition_service_can_disable_yfinance_cache_entirely(tmp_path):
+    captured_kwargs = {}
+
+    class _Provider:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+        def get_history_bundle(self, **kwargs):
+            return make_fetch_result("MSFT", make_provider_frame("MSFT"))
+
+    request = DatasetRequest(
+        tickers=["MSFT"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        output_dir=tmp_path,
+        provider=ProviderConfig(cache_mode="off"),
+    )
+
+    AcquisitionService(provider_factory=_Provider).fetch(
+        symbol="MSFT",
+        request=request,
+        auto_adjust=False,
+        actions=True,
+    )
+
+    assert captured_kwargs["cache_mode"] == "off"
+    assert captured_kwargs["cache_dir"] is None
+
+
+def test_acquisition_service_uses_run_scoped_cache_namespace_when_requested(tmp_path):
+    class _Provider:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def get_history_bundle(self, **kwargs):
+            return make_fetch_result("MSFT", make_provider_frame("MSFT"))
+
+    request = DatasetRequest(
+        tickers=["MSFT"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        output_dir=tmp_path,
+        provider=ProviderConfig(cache_mode="run"),
+    )
+
+    session = AcquisitionService(provider_factory=_Provider).create_session(
+        request,
+        cache_namespace="run-123",
+    )
+
+    assert session.cache_namespace == "run-123"
+    assert session.cache_dir == (tmp_path / "cache" / "yfinance" / "run-123").resolve()
 
 
 def test_clean_df_flags_when_close_is_derived_from_adj_close():
@@ -413,12 +494,15 @@ def test_yfinance_provider_keeps_legacy_dict_init_shim(tmp_path):
             "timeout": 3.5,
             "metadata_timeout": 1.5,
             "min_delay": 0.0,
+            "cache_mode": "process",
         }
     )
 
     info = provider.get_provider_info()
 
-    assert info["cache_dir"] == str((tmp_path / "cache").resolve())
+    assert info["cache_mode"] == "process"
+    assert info["cache_enabled"] is True
+    assert str((tmp_path / "cache").resolve()) in str(info["cache_dir"])
     assert info["retries"] == 2
     assert info["timeout"] == 3.5
     assert info["metadata_timeout"] == 1.5

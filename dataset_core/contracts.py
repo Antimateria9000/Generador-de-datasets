@@ -17,11 +17,14 @@ from dataset_core.settings import (
     DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
     DEFAULT_EODHD_TIMEOUT_SECONDS,
     DEFAULT_OUTPUT_ROOT,
+    DEFAULT_YFINANCE_CACHE_MODE,
     DQ_MODES,
     LISTING_PREFERENCES,
     OPTIONAL_COLUMNS,
     PRESET_NAMES,
     SUPPORTED_INTERVALS,
+    YFINANCE_CACHE_MODES,
+    normalize_yfinance_cache_mode,
     register_secret,
 )
 
@@ -207,6 +210,7 @@ class ProviderConfig:
     min_delay: Optional[float] = None
     max_intraday_lookback_days: Optional[int] = None
     cache_dir: Optional[Path] = None
+    cache_mode: str = DEFAULT_YFINANCE_CACHE_MODE
     allow_partial_intraday: bool = False
     metadata_candidate_limit: Optional[int] = None
     context_cache_ttl_seconds: Optional[int] = None
@@ -236,6 +240,7 @@ class ProviderConfig:
             raise RequestContractError("provider.batch_chunk_size must be >= 1.")
         if self.cache_dir is not None:
             object.__setattr__(self, "cache_dir", Path(self.cache_dir).expanduser().resolve())
+        object.__setattr__(self, "cache_mode", normalize_yfinance_cache_mode(self.cache_mode))
 
     def to_runtime_kwargs(self) -> dict[str, object]:
         payload: dict[str, object] = {}
@@ -253,6 +258,7 @@ class ProviderConfig:
             payload["max_intraday_lookback_days"] = int(self.max_intraday_lookback_days)
         if self.cache_dir is not None:
             payload["cache_dir"] = self.cache_dir
+        payload["cache_mode"] = self.cache_mode
         if self.allow_partial_intraday:
             payload["allow_partial_intraday"] = True
         return payload
@@ -360,6 +366,36 @@ class ExternalValidationConfig:
             object.__setattr__(self, "provider", normalized_provider)
         if self.enabled is not None:
             object.__setattr__(self, "enabled", bool(self.enabled))
+        self._validate_runtime_configuration()
+
+    def _should_validate_runtime_configuration(self) -> bool:
+        if self.enabled is False:
+            return False
+        return bool(self.provider is not None or self.has_legacy_sources or self.eodhd.api_key)
+
+    def _validate_runtime_configuration(self) -> None:
+        if not self._should_validate_runtime_configuration():
+            if self.enabled is True and self.resolved_provider() is None:
+                raise RequestContractError(
+                    "external_validation.enabled=True requires a resolvable provider. "
+                    "Configure external_validation.provider, legacy CSV/manual sources, or EODHD credentials."
+                )
+            return
+
+        provider = self.resolved_provider()
+        if provider is None:
+            raise RequestContractError(
+                "external_validation is enabled but no provider could be resolved. "
+                "Configure reference_dir/manual_events_file for CSV mode or provide EODHD credentials."
+            )
+        if provider == "csv" and not self.has_legacy_sources:
+            raise RequestContractError(
+                "external_validation.provider='csv' requires reference_dir and/or manual_events_file."
+            )
+        if provider == "eodhd" and self.eodhd.api_key is None:
+            raise RequestContractError(
+                "external_validation.provider='eodhd' requires external_validation.eodhd.api_key."
+            )
 
     @property
     def has_legacy_sources(self) -> bool:
@@ -375,8 +411,8 @@ class ExternalValidationConfig:
         return None
 
     def is_enabled(self) -> bool:
-        if self.enabled is not None:
-            return bool(self.enabled)
+        if self.enabled is False:
+            return False
         return self.resolved_provider() is not None
 
     def to_dict(self) -> dict[str, object]:

@@ -51,7 +51,11 @@ def test_external_validation_service_passes_for_identical_price_data():
     ).to_dict()
 
     assert report["status"] == "passed"
+    assert report["coverage_status"] == "full"
+    assert report["comparison_status"] == "passed"
     assert report["adapter_reports"][0]["status"] == "passed"
+    assert report["adapter_reports"][0]["coverage_status"] == "full"
+    assert report["adapter_reports"][0]["comparison_status"] == "passed"
 
 
 def test_external_validation_service_fails_when_reference_has_missing_dates():
@@ -65,6 +69,7 @@ def test_external_validation_service_fails_when_reference_has_missing_dates():
     ).to_dict()
 
     assert report["status"] == "failed"
+    assert report["comparison_status"] == "failed"
     assert report["adapter_reports"][0]["gap_count"] > 0
 
 
@@ -93,6 +98,8 @@ def test_external_validation_service_reports_coverage_gaps_as_not_validated():
     ).to_dict()
 
     assert report["status"] == "not_validated"
+    assert report["coverage_status"] == "partial"
+    assert report["comparison_status"] == "not_validated"
     assert report["adapter_reports"][0]["error_kind"] == "coverage_insufficient"
 
 
@@ -116,6 +123,7 @@ def test_external_validation_service_compares_sparse_events_without_calendar_pen
     ).to_dict()
 
     assert report["status"] == "passed"
+    assert report["comparison_status"] == "passed"
     assert report["adapter_reports"][0]["checked_event_count"] == 1
 
 
@@ -127,7 +135,7 @@ def test_external_validation_service_accepts_declared_partial_recent_price_cover
             "provider": "eodhd",
             "partial_coverage": True,
             "effective_start": str(dataset.iloc[-120]["date"]),
-            "effective_end": str(dataset.iloc[-1]["date"]),
+            "effective_end": str(dataset.iloc[-1]["date"] + pd.Timedelta(days=1)),
         },
     )
     reference["volume"] = reference["volume"] * 1.05
@@ -140,8 +148,67 @@ def test_external_validation_service_accepts_declared_partial_recent_price_cover
     ).to_dict()
 
     assert report["status"] == "passed_partial"
+    assert report["coverage_status"] == "partial"
+    assert report["comparison_status"] == "passed"
     assert report["adapter_reports"][0]["status"] == "passed_partial"
+    assert report["adapter_reports"][0]["coverage_status"] == "partial"
+    assert report["adapter_reports"][0]["comparison_status"] == "passed"
     assert report["adapter_reports"][0]["coverage"]["uncovered_prefix_count"] > 0
+    assert "coverage_limited" in report["adapter_reports"][0]["partial_validation_kinds"]
+
+
+def test_external_validation_service_fails_when_partial_provider_overlap_has_blocking_mismatch():
+    dataset = make_provider_frame("MSFT", periods=260)
+    reference = attach_source_metadata(
+        dataset.iloc[-120:].copy(),
+        {
+            "provider": "eodhd",
+            "partial_coverage": True,
+            "effective_start": str(dataset.iloc[-120]["date"]),
+            "effective_end": str(dataset.iloc[-1]["date"] + pd.Timedelta(days=1)),
+        },
+    )
+    reference["close"] = reference["close"] * 0.8
+
+    report = ExternalValidationService(adapters=[_InlinePriceAdapter(reference)]).validate(
+        frame=dataset,
+        symbol="MSFT",
+        start="2024-01-01T00:00:00",
+        end="2025-12-31T00:00:00",
+    ).to_dict()
+
+    assert report["status"] == "failed"
+    assert report["coverage_status"] == "partial"
+    assert report["comparison_status"] == "failed"
+    assert report["adapter_reports"][0]["coverage_status"] == "partial"
+    assert report["adapter_reports"][0]["comparison_status"] == "failed"
+
+
+def test_external_validation_service_fails_when_partial_provider_overlap_has_large_internal_gaps():
+    dataset = make_provider_frame("MSFT", periods=260)
+    reference = dataset.iloc[-120:].copy().reset_index(drop=True)
+    reference = reference.iloc[::3].reset_index(drop=True)
+    reference = attach_source_metadata(
+        reference,
+        {
+            "provider": "eodhd",
+            "partial_coverage": True,
+            "effective_start": str(dataset.iloc[-120]["date"]),
+            "effective_end": str(dataset.iloc[-1]["date"] + pd.Timedelta(days=1)),
+        },
+    )
+
+    report = ExternalValidationService(adapters=[_InlinePriceAdapter(reference)]).validate(
+        frame=dataset,
+        symbol="MSFT",
+        start="2024-01-01T00:00:00",
+        end="2025-12-31T00:00:00",
+    ).to_dict()
+
+    assert report["status"] == "failed"
+    assert report["coverage_status"] == "partial"
+    assert report["comparison_status"] == "failed"
+    assert report["adapter_reports"][0]["gap_ratio"] > 0.10
 
 
 def test_external_validation_service_downgrades_systematic_dividend_scale_mismatch_to_partial():
@@ -163,7 +230,11 @@ def test_external_validation_service_downgrades_systematic_dividend_scale_mismat
     ).to_dict()
 
     assert report["status"] == "passed_partial"
+    assert report["coverage_status"] == "partial"
+    assert report["comparison_status"] == "passed"
     assert report["adapter_reports"][0]["status"] == "passed_partial"
+    assert report["adapter_reports"][0]["coverage_status"] == "full"
+    assert report["adapter_reports"][0]["comparison_status"] == "passed"
     assert report["adapter_reports"][0]["systematic_dividend_scale_factor"] == 0.81
 
 
@@ -185,5 +256,6 @@ def test_external_validation_service_accepts_two_event_dividend_scale_mismatch_f
     ).to_dict()
 
     assert report["status"] == "passed_partial"
+    assert report["comparison_status"] == "passed"
     assert report["adapter_reports"][0]["status"] == "passed_partial"
     assert report["adapter_reports"][0]["systematic_dividend_scale_factor"] == 0.81

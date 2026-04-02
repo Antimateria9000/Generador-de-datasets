@@ -116,3 +116,20 @@ def test_streamlit_resolution_prefers_manual_then_env_then_none(monkeypatch):
         )
         is None
     )
+
+
+def test_cli_propagates_provider_cache_mode():
+    args = export_ohlcv_csv.build_parser().parse_args(
+        [
+            "--ticker",
+            "MSFT",
+            "--years",
+            "5",
+            "--provider-cache-mode",
+            "run",
+        ]
+    )
+
+    request = export_ohlcv_csv.build_request_from_args(args)
+
+    assert request.provider.cache_mode == "run"

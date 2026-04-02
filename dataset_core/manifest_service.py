@@ -60,6 +60,13 @@ def render_batch_manifest_text(manifest: dict[str, object]) -> str:
         lines.append(f"  meta={result.get('meta_path')}")
         lines.append(f"  dq={result.get('dq_path')}")
         lines.append(f"  external={result.get('external_validation_json_path')}")
+        if result.get("external_validation_status"):
+            lines.append(
+                "  external_status="
+                f"{result.get('external_validation_status')} "
+                f"(coverage={result.get('external_validation_coverage_status')} "
+                f"comparison={result.get('external_validation_comparison_status')})"
+            )
         if result.get("qlib_csv_path"):
             lines.append(f"  qlib_csv={result.get('qlib_csv_path')}")
         if result.get("qlib_report_path"):

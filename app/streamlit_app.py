@@ -24,10 +24,12 @@ from dataset_core.settings import (
     DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
     DEFAULT_EODHD_TIMEOUT_SECONDS,
     DEFAULT_OUTPUT_ROOT,
+    DEFAULT_YFINANCE_CACHE_MODE,
     DQ_MODES,
     LISTING_PREFERENCES,
     PRESET_NAMES,
     SUPPORTED_INTERVALS,
+    YFINANCE_CACHE_MODES,
     get_default_eodhd_api_key,
     resolve_eodhd_api_key,
     sanitize_secret_text,
@@ -106,6 +108,7 @@ def _build_request_from_form(
     eodhd_max_retries: str = "",
     eodhd_backoff_seconds: str = "",
     eodhd_price_lookback_days: str = "",
+    provider_cache_mode: str = DEFAULT_YFINANCE_CACHE_MODE,
     provider_metadata_timeout: str = "",
     provider_metadata_candidate_limit: str = "",
     provider_context_cache_ttl_seconds: str = "",
@@ -192,6 +195,7 @@ def _build_request_from_form(
         actions=True,
         qlib_sanitization=qlib_sanitization or mode == "qlib",
         provider=ProviderConfig(
+            cache_mode=provider_cache_mode,
             metadata_timeout=_parse_optional_positive_float(
                 provider_metadata_timeout,
                 "Metadata timeout",
@@ -572,6 +576,12 @@ def main() -> None:
                     value="",
                     help="Timeout explicito para lookups de metadata/contexto.",
                 )
+                provider_cache_mode = st.selectbox(
+                    "Modo cache yfinance",
+                    YFINANCE_CACHE_MODES,
+                    index=YFINANCE_CACHE_MODES.index(DEFAULT_YFINANCE_CACHE_MODE),
+                    help="`run` aísla la caché por corrida y reduce contención multiproceso.",
+                )
             with runtime_col_2:
                 provider_metadata_candidate_limit = st.text_input(
                     "Metadata candidate limit",
@@ -685,6 +695,7 @@ def main() -> None:
                 eodhd_max_retries=eodhd_max_retries,
                 eodhd_backoff_seconds=eodhd_backoff_seconds,
                 eodhd_price_lookback_days=eodhd_price_lookback_days,
+                provider_cache_mode=provider_cache_mode,
                 provider_metadata_timeout=provider_metadata_timeout,
                 provider_metadata_candidate_limit=provider_metadata_candidate_limit,
                 provider_context_cache_ttl_seconds=provider_context_cache_ttl_seconds,

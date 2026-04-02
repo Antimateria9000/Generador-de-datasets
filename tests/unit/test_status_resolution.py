@@ -15,7 +15,7 @@ def test_not_validated_external_status_degrades_to_warning():
 
     assert result.status == "warning"
     assert result.validation_outcome == "success_partial_validation"
-    assert "External validation did not run." in result.reasons
+    assert "External validation did not validate the dataset." in result.reasons
 
 
 def test_failed_external_status_degrades_to_warning():
@@ -65,3 +65,21 @@ def test_adapter_error_external_status_is_material():
     assert result.validation_outcome == "failure"
     assert "Adapter error: boom" in result.reasons
     assert "Internal validation passed with warnings." in result.reasons
+
+
+def test_passed_partial_external_status_describes_provider_covered_overlap():
+    result = resolve_ticker_status(
+        warnings=[],
+        internal_validation_status="passed",
+        external_validation_status="passed_partial",
+        external_validation_reason="External validation passed on the provider-covered or otherwise validated overlap only.",
+        external_validation_coverage_status="partial",
+        external_validation_comparison_status="passed",
+        qlib_requested=False,
+        qlib_compatible=False,
+        qlib_errors=[],
+    )
+
+    assert result.status == "warning"
+    assert result.validation_outcome == "success_partial_validation"
+    assert any("provider-covered overlap only" in reason.lower() for reason in result.reasons)

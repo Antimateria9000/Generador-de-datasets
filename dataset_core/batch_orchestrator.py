@@ -67,11 +67,22 @@ class BatchOrchestrator:
             return max(1, int(configured_chunk_size))
         return max(1, int(batch_max_workers) * 4)
 
-    def _build_runtime(self, request: DatasetRequest, export_service: DatasetExportService) -> BatchRuntime:
+    def _build_runtime(
+        self,
+        request: DatasetRequest,
+        export_service: DatasetExportService,
+        *,
+        cache_namespace: str | None = None,
+    ) -> BatchRuntime:
         metadata_timeout = request.provider.metadata_timeout or request.provider.timeout
         cache_paths = resolve_effective_cache_paths(request.output_dir, request.provider.cache_dir)
         create_session = getattr(export_service.acquisition_service, "create_session", None)
-        provider_session = create_session(request) if callable(create_session) else None
+        provider_session = None
+        if callable(create_session):
+            try:
+                provider_session = create_session(request, cache_namespace=cache_namespace)
+            except TypeError:
+                provider_session = create_session(request)
         batch_max_workers = self._effective_batch_workers(request, provider_session)
         batch_chunk_size = self._effective_chunk_size(request, batch_max_workers)
         context_resolver = ContextResolver(
@@ -400,7 +411,7 @@ class BatchOrchestrator:
             normalized_execution_mode,
         )
         try:
-            runtime = self._build_runtime(request, export_service)
+            runtime = self._build_runtime(request, export_service, cache_namespace=run_dirs.run_id)
             plans = self._plan_batch(
                 export_service,
                 request,

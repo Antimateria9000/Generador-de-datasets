@@ -29,7 +29,7 @@ import pandas as pd
 import yfinance as yf
 
 from dataset_core.date_windows import DateWindowError, is_daily_like_interval, is_intraday_interval, validate_provider_window
-from dataset_core.settings import SUPPORTED_INTERVALS
+from dataset_core.settings import DEFAULT_YFINANCE_CACHE_MODE, SUPPORTED_INTERVALS, normalize_yfinance_cache_mode
 
 PROVIDER_NAME = "AB3.YFinanceProvider"
 PROVIDER_VERSION = "2.1.0"
@@ -194,8 +194,9 @@ def _coerce_legacy_init_kwargs(
     min_delay: float,
     max_intraday_lookback_days: int,
     cache_dir: str | Path | None,
+    cache_mode: str,
     allow_partial_intraday: bool,
-) -> tuple[int, int, float, float | None, float, int, str | Path | None, bool]:
+) -> tuple[int, int, float, float | None, float, int, str | Path | None, str, bool]:
     if not isinstance(max_workers, dict):
         return (
             int(max_workers),
@@ -205,6 +206,7 @@ def _coerce_legacy_init_kwargs(
             min_delay,
             max_intraday_lookback_days,
             cache_dir,
+            cache_mode,
             allow_partial_intraday,
         )
 
@@ -222,6 +224,7 @@ def _coerce_legacy_init_kwargs(
         float(params.get("min_delay", DEFAULT_MIN_DELAY)),
         int(params.get("max_intraday_lookback_days", DEFAULT_MAX_INTRADAY_LOOKBACK_DAYS)),
         params.get("cache_dir"),
+        str(params.get("cache_mode", DEFAULT_YFINANCE_CACHE_MODE)),
         bool(params.get("allow_partial_intraday", False)),
     )
 
@@ -553,6 +556,7 @@ class YFinanceProvider:
         min_delay: float = DEFAULT_MIN_DELAY,
         max_intraday_lookback_days: int = DEFAULT_MAX_INTRADAY_LOOKBACK_DAYS,
         cache_dir: str | Path | None = None,
+        cache_mode: str = DEFAULT_YFINANCE_CACHE_MODE,
         allow_partial_intraday: bool = False,
     ) -> None:
         (
@@ -563,6 +567,7 @@ class YFinanceProvider:
             min_delay,
             max_intraday_lookback_days,
             cache_dir,
+            cache_mode,
             allow_partial_intraday,
         ) = _coerce_legacy_init_kwargs(
             max_workers,
@@ -572,6 +577,7 @@ class YFinanceProvider:
             min_delay,
             max_intraday_lookback_days,
             cache_dir,
+            cache_mode,
             allow_partial_intraday,
         )
 
@@ -581,7 +587,13 @@ class YFinanceProvider:
         self.metadata_timeout = self.timeout if metadata_timeout is None else float(metadata_timeout)
         self.min_delay = float(min_delay)
         self.max_intraday_lookback_days = int(max_intraday_lookback_days)
+        try:
+            self.cache_mode = normalize_yfinance_cache_mode(cache_mode)
+        except ValueError as exc:
+            raise ProviderConfigurationError(str(exc)) from exc
         self.cache_dir = None if cache_dir in (None, "") else Path(cache_dir).expanduser().resolve()
+        self.effective_cache_dir: Path | None = None
+        self.cache_enabled = self.cache_mode != "off"
         self.allow_partial_intraday = bool(allow_partial_intraday)
 
         if self.max_workers < 1:
@@ -597,10 +609,69 @@ class YFinanceProvider:
         if self.max_intraday_lookback_days < 1:
             raise ProviderConfigurationError("max_intraday_lookback_days must be >= 1.")
 
-        self._configure_project_cache(self.cache_dir)
+        self.effective_cache_dir = self._configure_project_cache(self.cache_dir, cache_mode=self.cache_mode)
+        self.cache_enabled = self.effective_cache_dir is not None
 
     @staticmethod
-    def _configure_project_cache(cache_dir: Path | None = None) -> None:
+    def _reset_project_cache_state() -> None:
+        try:
+            import yfinance.cache as yf_cache
+        except Exception:
+            return
+
+        for manager_name, cache_attr in (
+            ("_TzCacheManager", "_tz_cache"),
+            ("_CookieCacheManager", "_Cookie_cache"),
+            ("_ISINCacheManager", "_isin_cache"),
+        ):
+            manager = getattr(yf_cache, manager_name, None)
+            if manager is None:
+                continue
+            cache_instance = getattr(manager, cache_attr, None)
+            db = getattr(cache_instance, "db", None)
+            try:
+                if db is not None:
+                    db.close()
+            except Exception:
+                pass
+            setattr(manager, cache_attr, None)
+
+        for db_manager_name in ("_TzDBManager", "_CookieDBManager", "_ISINDBManager"):
+            db_manager = getattr(yf_cache, db_manager_name, None)
+            if db_manager is None:
+                continue
+            close_db = getattr(db_manager, "close_db", None)
+            if callable(close_db):
+                try:
+                    close_db()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _disable_project_cache() -> None:
+        YFinanceProvider._reset_project_cache_state()
+        try:
+            import yfinance.cache as yf_cache
+        except Exception:
+            return
+        if hasattr(yf_cache, "_TzCacheDummy") and hasattr(yf_cache, "_TzCacheManager"):
+            yf_cache._TzCacheManager._tz_cache = yf_cache._TzCacheDummy()
+        if hasattr(yf_cache, "_CookieCacheDummy") and hasattr(yf_cache, "_CookieCacheManager"):
+            yf_cache._CookieCacheManager._Cookie_cache = yf_cache._CookieCacheDummy()
+        if hasattr(yf_cache, "_ISINCacheDummy") and hasattr(yf_cache, "_ISINCacheManager"):
+            yf_cache._ISINCacheManager._isin_cache = yf_cache._ISINCacheDummy()
+
+    @staticmethod
+    def _configure_project_cache(
+        cache_dir: Path | None = None,
+        *,
+        cache_mode: str = DEFAULT_YFINANCE_CACHE_MODE,
+    ) -> Path | None:
+        normalized_mode = normalize_yfinance_cache_mode(cache_mode)
+        if normalized_mode == "off":
+            YFinanceProvider._disable_project_cache()
+            return None
+
         project_root = Path(__file__).resolve().parents[1]
         resolved_cache_dir = (
             project_root / "workspace" / "cache" / "yfinance"
@@ -609,27 +680,32 @@ class YFinanceProvider:
         )
         resolved_cache_dir.mkdir(parents=True, exist_ok=True)
         try:
+            YFinanceProvider._reset_project_cache_state()
             probe_path = resolved_cache_dir / "probe.db"
             connection = sqlite3.connect(probe_path)
             connection.execute("create table if not exists probe(x int)")
             connection.commit()
             connection.close()
             probe_path.unlink(missing_ok=True)
-            yf.set_tz_cache_location(str(resolved_cache_dir))
+            try:
+                import yfinance.cache as yf_cache
+
+                set_cache_location = getattr(yf_cache, "set_cache_location", None)
+                if callable(set_cache_location):
+                    set_cache_location(str(resolved_cache_dir))
+                else:
+                    yf.set_tz_cache_location(str(resolved_cache_dir))
+            except Exception:
+                yf.set_tz_cache_location(str(resolved_cache_dir))
+            return resolved_cache_dir
         except Exception as exc:
             logger.warning(
                 "yfinance sqlite cache is not available at %s; disabling yfinance caches. Reason: %s",
                 resolved_cache_dir,
                 exc,
             )
-            try:
-                import yfinance.cache as yf_cache
-
-                yf_cache._TzCacheManager._tz_cache = yf_cache._TzCacheDummy()
-                yf_cache._CookieCacheManager._Cookie_cache = yf_cache._CookieCacheDummy()
-                yf_cache._ISINCacheManager._isin_cache = yf_cache._ISINCacheDummy()
-            except Exception as cache_exc:
-                logger.warning("Failed to disable yfinance caches cleanly: %s", cache_exc)
+            YFinanceProvider._disable_project_cache()
+            return None
 
     def _download_via_ticker(
         self,
@@ -1425,7 +1501,9 @@ class YFinanceProvider:
             "metadata_timeout": self.metadata_timeout,
             "min_delay": self.min_delay,
             "max_intraday_lookback_days": self.max_intraday_lookback_days,
-            "cache_dir": None if self.cache_dir is None else str(self.cache_dir),
+            "cache_mode": self.cache_mode,
+            "cache_dir": None if self.effective_cache_dir is None else str(self.effective_cache_dir),
+            "cache_enabled": self.cache_enabled,
             "allow_partial_intraday": self.allow_partial_intraday,
             "export_columns": list(EXPORT_COLUMNS),
         }

@@ -4,8 +4,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Dict, Iterable, Tuple
+from uuid import uuid4
 
-from dataset_core.settings import resolve_effective_cache_paths
+from dataset_core.settings import resolve_yfinance_cache_dir
 from providers.yfinance_provider import FetchResult, FetchState, YFinanceProvider
 
 from dataset_core.contracts import DatasetRequest
@@ -14,7 +15,8 @@ from dataset_core.contracts import DatasetRequest
 @dataclass
 class ProviderSession:
     provider: YFinanceProvider
-    cache_dir: Path
+    cache_dir: Path | None
+    cache_namespace: str | None = None
     bundle_cache: Dict[Tuple[object, ...], Dict[str, FetchResult]] = field(default_factory=dict)
     lock: Lock = field(default_factory=Lock, repr=False)
     metrics: dict[str, int] = field(
@@ -85,18 +87,39 @@ class AcquisitionService:
     def _is_failure_result(cls, result: FetchResult) -> bool:
         return cls._classify_fetch_result(result) == FetchState.FAILED.value
 
-    def _provider_kwargs(self, request: DatasetRequest) -> dict[str, object]:
+    def _provider_kwargs(
+        self,
+        request: DatasetRequest,
+        *,
+        cache_namespace: str | None = None,
+    ) -> tuple[dict[str, object], str | None]:
         provider_kwargs = request.provider.to_runtime_kwargs()
-        cache_paths = resolve_effective_cache_paths(request.output_dir, request.provider.cache_dir)
-        provider_kwargs["cache_dir"] = cache_paths["yfinance"]
-        return provider_kwargs
+        resolved_namespace = cache_namespace
+        if request.provider.cache_mode == "run" and not resolved_namespace:
+            resolved_namespace = f"session-{uuid4().hex[:12]}"
+        provider_kwargs["cache_dir"] = resolve_yfinance_cache_dir(
+            request.output_dir,
+            request.provider.cache_dir,
+            cache_mode=request.provider.cache_mode,
+            cache_namespace=resolved_namespace,
+        )
+        provider_kwargs["cache_mode"] = request.provider.cache_mode
+        return provider_kwargs, resolved_namespace
 
-    def create_session(self, request: DatasetRequest) -> ProviderSession:
-        provider_kwargs = self._provider_kwargs(request)
+    def create_session(
+        self,
+        request: DatasetRequest,
+        *,
+        cache_namespace: str | None = None,
+    ) -> ProviderSession:
+        provider_kwargs, resolved_namespace = self._provider_kwargs(request, cache_namespace=cache_namespace)
         provider = self.provider_factory(**provider_kwargs)
         session = ProviderSession(
             provider=provider,
-            cache_dir=Path(provider_kwargs["cache_dir"]).expanduser().resolve(),
+            cache_dir=None
+            if provider_kwargs["cache_dir"] is None
+            else Path(provider_kwargs["cache_dir"]).expanduser().resolve(),
+            cache_namespace=resolved_namespace,
         )
         self.last_session = session
         return session

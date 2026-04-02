@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dataset_core.contracts import ExternalValidationConfig
+from dataset_core.contracts import ExternalValidationConfig, RequestContractError
 from dataset_core.external_sources.csv_source import CSVReferenceSource
 from dataset_core.external_sources.eodhd import (
     EODHDClient,
@@ -29,6 +29,10 @@ def build_external_validation_service(
         return ExternalValidationService()
 
     provider = config.resolved_provider()
+    if provider is None:
+        raise RequestContractError(
+            "External validation is enabled but no provider could be resolved from the current configuration."
+        )
     price_adapters = []
     event_adapters = []
 
@@ -41,7 +45,9 @@ def build_external_validation_service(
 
     if provider == "eodhd":
         if not config.eodhd.api_key:
-            raise ValueError("external_validation.provider='eodhd' requires external_validation.eodhd.api_key.")
+            raise RequestContractError(
+                "external_validation.provider='eodhd' requires external_validation.eodhd.api_key."
+            )
         cache_dir = None
         if config.eodhd.use_cache:
             cache_dir = config.eodhd.cache_dir or _default_eodhd_cache_dir(output_root)
@@ -76,4 +82,4 @@ def build_external_validation_service(
             ],
         )
 
-    raise ValueError(f"Unsupported external validation provider: {provider!r}")
+    raise RequestContractError(f"Unsupported external validation provider: {provider!r}")

@@ -89,6 +89,17 @@ def extract_source_metadata(frame: pd.DataFrame | None) -> dict[str, object]:
     return dict(metadata) if isinstance(metadata, dict) else {}
 
 
+def _empty_frame_with_attrs(
+    frame: pd.DataFrame | None,
+    *,
+    columns: list[str] | tuple[str, ...] | None = None,
+) -> pd.DataFrame:
+    empty = pd.DataFrame(columns=[] if columns is None else list(columns))
+    if frame is not None:
+        empty.attrs = dict(getattr(frame, "attrs", {}))
+    return empty
+
+
 def _preserve_attrs(frame: pd.DataFrame, working: pd.DataFrame) -> pd.DataFrame:
     working.attrs = dict(getattr(frame, "attrs", {}))
     return working
@@ -106,10 +117,7 @@ def _normalize_reference_dates(values: pd.Series) -> pd.Series:
     return normalized.dt.tz_convert("UTC").dt.tz_localize(None)
 
 
-def normalize_reference_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    if frame is None or frame.empty:
-        return pd.DataFrame()
-
+def _prepare_reference_frame(frame: pd.DataFrame) -> pd.DataFrame:
     working = frame.copy()
     working.columns = [str(column).strip().lower() for column in working.columns]
     rename_map = {
@@ -118,10 +126,22 @@ def normalize_reference_frame(frame: pd.DataFrame) -> pd.DataFrame:
         "stock splits": "stock_splits",
     }
     working = working.rename(columns=rename_map)
-
     if "date" not in working.columns:
-        first_column = str(working.columns[0])
-        working = working.rename(columns={first_column: "date"})
+        if len(working.columns) == 0:
+            working["date"] = pd.Series(dtype="datetime64[ns]")
+        else:
+            first_column = str(working.columns[0])
+            working = working.rename(columns={first_column: "date"})
+    return _preserve_attrs(frame, working)
+
+
+def normalize_reference_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None:
+        return pd.DataFrame()
+
+    working = _prepare_reference_frame(frame)
+    if working.empty:
+        return _preserve_attrs(frame, working.reset_index(drop=True))
 
     working["date"] = _normalize_reference_dates(working["date"])
     working = working.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
@@ -129,7 +149,7 @@ def normalize_reference_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def normalize_event_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    if frame is None or frame.empty:
+    if frame is None:
         return pd.DataFrame(columns=["date", "dividends", "stock_splits"])
 
     working = normalize_reference_frame(frame)
@@ -156,12 +176,12 @@ def filter_reference_frame(
     start: object | None,
     end: object | None,
 ) -> pd.DataFrame:
-    if frame is None or frame.empty:
+    if frame is None:
         return pd.DataFrame()
 
     normalized = normalize_reference_frame(frame)
     if normalized.empty:
-        return normalized
+        return _preserve_attrs(frame, normalized.reset_index(drop=True))
 
     start_ts = normalize_reference_timestamp(start) if start else None
     end_ts = normalize_reference_timestamp(end) if end else None
@@ -178,12 +198,12 @@ def filter_event_frame(
     start: object | None,
     end: object | None,
 ) -> pd.DataFrame:
-    if frame is None or frame.empty:
+    if frame is None:
         return pd.DataFrame(columns=["date", "dividends", "stock_splits"])
 
     normalized = normalize_event_frame(frame)
     if normalized.empty:
-        return normalized
+        return _preserve_attrs(frame, normalized.reset_index(drop=True))
 
     start_ts = normalize_reference_timestamp(start) if start else None
     end_ts = normalize_reference_timestamp(end) if end else None

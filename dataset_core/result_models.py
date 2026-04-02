@@ -52,6 +52,8 @@ class TickerResult:
     errors: list[str] = field(default_factory=list)
     internal_validation_status: Optional[str] = None
     external_validation_status: Optional[str] = None
+    external_validation_coverage_status: Optional[str] = None
+    external_validation_comparison_status: Optional[str] = None
     factor_policy: Optional[str] = None
     factor_source: Optional[str] = None
     provider_symbol: Optional[str] = None
@@ -75,6 +77,8 @@ class TickerResult:
             "errors": list(self.errors),
             "internal_validation_status": self.internal_validation_status,
             "external_validation_status": self.external_validation_status,
+            "external_validation_coverage_status": self.external_validation_coverage_status,
+            "external_validation_comparison_status": self.external_validation_comparison_status,
             "factor_policy": self.factor_policy,
             "factor_source": self.factor_source,
             "provider_symbol": self.provider_symbol,

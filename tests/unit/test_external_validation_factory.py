@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dataset_core.contracts import EODHDExternalValidationConfig, ExternalValidationConfig
+import pytest
+
+from dataset_core.contracts import EODHDExternalValidationConfig, ExternalValidationConfig, RequestContractError
 from dataset_core.external_sources.factory import build_external_validation_service
 from dataset_core.settings import resolve_eodhd_api_key, reset_local_env_cache
 
@@ -81,3 +83,8 @@ def test_external_validation_factory_accepts_api_key_resolved_from_env(tmp_path,
 
     assert [adapter.name() for adapter in service.price_adapters] == ["eodhd_prices"]
     assert captured["api_key"] == "env-secret"
+
+
+def test_external_validation_factory_never_receives_enabled_config_without_resolved_provider():
+    with pytest.raises(RequestContractError, match="resolvable provider"):
+        ExternalValidationConfig(enabled=True)

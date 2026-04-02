@@ -28,7 +28,6 @@ from dataset_core.external_sources.eodhd import (
     parse_eodhd_prices,
     parse_eodhd_splits,
 )
-from dataset_core.external_sources.factory import build_external_validation_service
 from dataset_core.external_sources.manual_events import ManualEventReferenceSource
 
 __all__ = [
@@ -50,7 +49,6 @@ __all__ = [
     "ValidationScope",
     "adapter_validation_scope",
     "attach_source_metadata",
-    "build_external_validation_service",
     "extract_source_metadata",
     "filter_event_frame",
     "filter_reference_frame",

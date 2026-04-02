@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from dataset_core.external_sources import (
-    CSVReferenceSource,
+from dataset_core.external_sources.base import (
     ExternalCorporateActionsReferenceSource,
     ExternalPriceReferenceSource,
     ValidationScope,
@@ -14,6 +13,7 @@ from dataset_core.external_sources import (
     normalize_reference_frame,
     normalize_reference_timestamp,
 )
+from dataset_core.external_sources.csv_source import CSVReferenceSource
 from dataset_core.external_sources.manual_events import ManualEventReferenceSource
 
 

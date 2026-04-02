@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 from typing import Final
+from uuid import uuid4
 
 APP_NAME: Final[str] = "Dataset Factory"
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
@@ -29,6 +30,7 @@ DEFAULT_EODHD_CACHE_TTL_SECONDS: Final[int] = 24 * 60 * 60
 DEFAULT_EODHD_MAX_RETRIES: Final[int] = 2
 DEFAULT_EODHD_BACKOFF_SECONDS: Final[float] = 0.5
 DEFAULT_EODHD_PRICE_LOOKBACK_DAYS: Final[int] = 365
+DEFAULT_YFINANCE_CACHE_MODE: Final[str] = "shared"
 
 SUPPORTED_INTERVALS: Final[tuple[str, ...]] = (
     "1m",
@@ -71,6 +73,7 @@ QLIB_OPTIONAL_COLUMNS: Final[tuple[str, ...]] = ()
 
 REFERENCE_RELATIVE_TOLERANCE: Final[float] = 5e-3
 REFERENCE_SAMPLE_POINTS: Final[int] = 10
+YFINANCE_CACHE_MODES: Final[tuple[str, ...]] = ("shared", "process", "run", "off")
 
 WORKSPACE_DIRECTORIES: Final[tuple[Path, ...]] = (
     WORKSPACE_ROOT,
@@ -94,6 +97,7 @@ _SECRET_ENV_ASSIGNMENT_RE = re.compile(
 )
 _REGISTERED_SECRETS: set[str] = set()
 _REGISTERED_SECRETS_LOCK = Lock()
+_CACHE_NAMESPACE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def ensure_directory(path: Path) -> Path:
@@ -136,6 +140,42 @@ def resolve_effective_cache_paths(
         "yfinance": yfinance_cache,
         "market_context": cache_root / "market_context",
     }
+
+
+def normalize_yfinance_cache_mode(mode: str | None) -> str:
+    normalized = str(mode or DEFAULT_YFINANCE_CACHE_MODE).strip().lower()
+    if normalized not in YFINANCE_CACHE_MODES:
+        allowed = ", ".join(YFINANCE_CACHE_MODES)
+        raise ValueError(f"Unsupported yfinance cache mode: {mode!r}. Allowed values: {allowed}.")
+    return normalized
+
+
+def sanitize_cache_namespace(namespace: str | None, *, fallback_prefix: str = "session") -> str:
+    normalized = _CACHE_NAMESPACE_RE.sub("-", str(namespace or "").strip()).strip("-.")
+    if normalized:
+        return normalized
+    return f"{fallback_prefix}-{uuid4().hex[:12]}"
+
+
+def resolve_yfinance_cache_dir(
+    base_root: Path | None = None,
+    provider_cache_dir: Path | None = None,
+    *,
+    cache_mode: str | None = None,
+    cache_namespace: str | None = None,
+) -> Path | None:
+    normalized_mode = normalize_yfinance_cache_mode(cache_mode)
+    if normalized_mode == "off":
+        return None
+
+    base_cache_dir = resolve_effective_cache_paths(base_root, provider_cache_dir)["yfinance"]
+    if normalized_mode == "shared":
+        return base_cache_dir
+    if normalized_mode == "process":
+        return base_cache_dir / f"process-{os.getpid()}"
+
+    namespace = sanitize_cache_namespace(cache_namespace, fallback_prefix="run")
+    return base_cache_dir / namespace
 
 
 def ensure_workspace_tree(base_root: Path | None = None) -> dict[str, Path]:

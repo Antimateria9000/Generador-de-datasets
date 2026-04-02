@@ -422,6 +422,8 @@ class DatasetExportService:
                 internal_validation_reason=internal_report.get("reason"),
                 external_validation_status=external_report.get("status"),
                 external_validation_reason=external_report.get("reason"),
+                external_validation_coverage_status=external_report.get("coverage_status"),
+                external_validation_comparison_status=external_report.get("comparison_status"),
                 qlib_requested=request.qlib_sanitization,
                 qlib_compatible=qlib_compatible,
                 qlib_errors=qlib_errors,
@@ -455,6 +457,9 @@ class DatasetExportService:
                     "validation_outcome": status_resolution.validation_outcome,
                     "reasons": list(status_resolution.reasons),
                     "neutral_notes": list(status_resolution.neutral_notes),
+                    "external_validation_status": external_report.get("status"),
+                    "external_validation_coverage_status": external_report.get("coverage_status"),
+                    "external_validation_comparison_status": external_report.get("comparison_status"),
                 },
                 "artifacts": artifacts.to_dict(),
                 "dataset": {
@@ -505,6 +510,12 @@ class DatasetExportService:
                 errors=errors,
                 internal_validation_status=str(internal_report["status"]),
                 external_validation_status=str(external_report["status"]),
+                external_validation_coverage_status=None
+                if external_report.get("coverage_status") is None
+                else str(external_report.get("coverage_status")),
+                external_validation_comparison_status=None
+                if external_report.get("comparison_status") is None
+                else str(external_report.get("comparison_status")),
                 factor_policy=primary_factor_policy,
                 factor_source=primary_factor_source,
                 provider_symbol=provider_symbol,

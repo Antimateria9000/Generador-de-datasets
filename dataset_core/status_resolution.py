@@ -52,6 +52,44 @@ def _prefix_reason(prefix: str, detail: str | None) -> str:
     return f"{sentence} {cleaned}"
 
 
+def _normalize_status(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    return normalized or None
+
+
+def _resolve_external_partial_reason(
+    *,
+    external_validation_status: str | None,
+    external_validation_reason: str | None,
+    external_validation_coverage_status: str | None,
+    external_validation_comparison_status: str | None,
+) -> str:
+    normalized_status = _normalize_status(external_validation_status)
+    normalized_coverage = _normalize_status(external_validation_coverage_status)
+    normalized_comparison = _normalize_status(external_validation_comparison_status)
+
+    if normalized_status == "passed_partial":
+        if normalized_comparison == "passed" and normalized_coverage == "partial":
+            prefix = "External validation passed on the provider-covered overlap only"
+        elif normalized_comparison == "passed":
+            prefix = "External validation passed with documented provider caveats"
+        else:
+            prefix = "External validation was only partially conclusive"
+    elif normalized_status == "not_validated":
+        if normalized_coverage == "partial":
+            prefix = "External validation only had partial coverage and could not validate the requested overlap"
+        else:
+            prefix = "External validation did not validate the dataset"
+    elif normalized_status == "skipped":
+        prefix = "External validation was skipped"
+    else:
+        prefix = "External validation did not fully validate the dataset"
+
+    return _prefix_reason(prefix, external_validation_reason)
+
+
 def resolve_ticker_status(
     *,
     warnings: list[str] | tuple[str, ...],
@@ -60,6 +98,8 @@ def resolve_ticker_status(
     internal_validation_reason: str | None = None,
     external_validation_status: str | None,
     external_validation_reason: str | None = None,
+    external_validation_coverage_status: str | None = None,
+    external_validation_comparison_status: str | None = None,
     qlib_requested: bool,
     qlib_compatible: bool,
     qlib_errors: list[str] | tuple[str, ...],
@@ -69,8 +109,8 @@ def resolve_ticker_status(
     partial_validation = False
     validation_failed = False
 
-    normalized_internal = None if internal_validation_status is None else str(internal_validation_status).strip().lower()
-    normalized_external = None if external_validation_status is None else str(external_validation_status).strip().lower()
+    normalized_internal = _normalize_status(internal_validation_status)
+    normalized_external = _normalize_status(external_validation_status)
 
     if normalized_internal == "passed":
         pass
@@ -104,7 +144,14 @@ def resolve_ticker_status(
         pass
     elif normalized_external in _PARTIAL_EXTERNAL_STATUSES:
         partial_validation = True
-        reasons.append(_prefix_reason("External validation did not run", external_validation_reason))
+        reasons.append(
+            _resolve_external_partial_reason(
+                external_validation_status=external_validation_status,
+                external_validation_reason=external_validation_reason,
+                external_validation_coverage_status=external_validation_coverage_status,
+                external_validation_comparison_status=external_validation_comparison_status,
+            )
+        )
     else:
         validation_failed = True
         reasons.append(

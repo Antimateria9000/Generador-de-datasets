@@ -139,7 +139,7 @@ def test_contextual_market_notes_do_not_add_extra_degradation(monkeypatch, tmp_p
     assert result.validation_outcome == "success_partial_validation"
     assert result.warnings == []
     assert any("metadata de Yahoo" in note for note in result.neutral_notes)
-    assert any("External validation did not run." in reason for reason in result.status_reasons)
+    assert any("External validation did not validate the dataset." in reason for reason in result.status_reasons)
 
 
 def test_internal_validation_unsupported_degrades_to_warning(tmp_path, patch_market_context):
@@ -337,3 +337,31 @@ def test_batch_orchestrator_chunks_grouped_acquisition_requests(tmp_path, patch_
         ("NVDA", "AMZN"),
         ("META",),
     }
+
+
+def test_batch_orchestrator_passes_run_id_as_cache_namespace_when_run_scoped_cache_is_enabled(
+    tmp_path,
+    patch_market_context,
+):
+    class _CaptureAcquisitionService(DummyAcquisitionService):
+        def __init__(self, datasets):
+            super().__init__(datasets)
+            self.cache_namespaces: list[str | None] = []
+
+        def create_session(self, request, cache_namespace=None):
+            self.cache_namespaces.append(cache_namespace)
+            return super().create_session(request)
+
+    acquisition_service = _CaptureAcquisitionService({"MSFT": make_provider_frame("MSFT")})
+    export_service = DatasetExportService(acquisition_service=acquisition_service)
+    request = DatasetRequest(
+        tickers=["MSFT"],
+        time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+        output_dir=tmp_path,
+        dq_mode="off",
+        provider=ProviderConfig(cache_mode="run"),
+    )
+
+    batch_result = BatchOrchestrator(export_service=export_service).run(request)
+
+    assert acquisition_service.cache_namespaces == [batch_result.run_id]

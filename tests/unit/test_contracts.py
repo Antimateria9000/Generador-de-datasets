@@ -93,3 +93,13 @@ def test_eodhd_config_repr_and_request_serialization_do_not_expose_api_key():
     assert secret not in repr(request.external_validation.eodhd)
     assert secret not in serialized
     assert payload["external_validation"]["eodhd"]["api_key_configured"] is True
+
+
+def test_external_validation_rejects_enabled_true_without_resolvable_provider():
+    with pytest.raises(RequestContractError, match="requires a resolvable provider"):
+        ExternalValidationConfig(enabled=True)
+
+
+def test_external_validation_rejects_explicit_eodhd_provider_without_api_key():
+    with pytest.raises(RequestContractError, match="requires external_validation.eodhd.api_key"):
+        ExternalValidationConfig(enabled=True, provider="eodhd")

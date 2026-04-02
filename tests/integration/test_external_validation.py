@@ -46,9 +46,11 @@ def test_external_validation_reports_not_validated_without_reference(tmp_path, p
     result = batch_result.results[0]
 
     assert result.external_validation_status == "not_validated"
+    assert result.external_validation_coverage_status == "none"
+    assert result.external_validation_comparison_status == "not_validated"
     assert result.status == "warning"
     assert result.validation_outcome == "success_partial_validation"
-    assert any("external validation did not run" in reason.lower() for reason in result.status_reasons)
+    assert any("external validation did not validate the dataset" in reason.lower() for reason in result.status_reasons)
 
 
 def test_external_validation_reports_adapter_error_separately_from_missing_reference(tmp_path):
@@ -116,10 +118,47 @@ def test_external_validation_zero_reference_does_not_false_pass():
         end=None,
     ).to_dict()
 
-    assert report["status"] == "failed"
+    assert report["status"] == "passed_partial"
     adapter_report = report["adapter_reports"][0]
-    assert adapter_report["status"] == "failed"
+    assert adapter_report["status"] == "passed_partial"
+    assert adapter_report["comparison_status"] == "passed"
+    assert "advisory_zero_baseline_mismatch" in adapter_report["partial_validation_kinds"]
     assert adapter_report["zero_reference_mismatch_count"] == 2
+
+
+def test_external_validation_blocking_zero_reference_mismatch_still_fails():
+    dataset = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-01-01", "2024-01-02"]),
+            "open": [1.0, 1.0],
+            "high": [1.0, 1.0],
+            "low": [1.0, 1.0],
+            "close": [1.0, 1.0],
+            "volume": [10.0, 10.0],
+            "adj_close": [1.0, 1.0],
+        }
+    )
+    reference = dataset.copy()
+    reference["close"] = [0.0, 0.0]
+
+    class _Adapter:
+        def name(self):
+            return "inline"
+
+        def fetch_reference(self, symbol, start, end):
+            return reference
+
+    report = ExternalValidationService(adapters=[_Adapter()]).validate(
+        frame=dataset,
+        symbol="MSFT",
+        start=None,
+        end=None,
+    ).to_dict()
+
+    assert report["status"] == "failed"
+    assert report["comparison_status"] == "failed"
+    assert report["adapter_reports"][0]["status"] == "failed"
+    assert report["adapter_reports"][0]["comparison_status"] == "failed"
 
 
 def test_external_validation_normalizes_naive_and_utc_aware_dates_before_merge():

@@ -57,3 +57,21 @@ def test_get_default_eodhd_api_key_falls_back_cleanly_without_python_dotenv(tmp_
 
     assert settings.load_local_env(project_root=tmp_path) == env_path
     assert settings.get_default_eodhd_api_key(project_root=tmp_path) == "fallback-secret"
+
+
+def test_resolve_yfinance_cache_dir_supports_shared_process_run_and_off_modes(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings.os, "getpid", lambda: 4242)
+
+    assert settings.resolve_yfinance_cache_dir(tmp_path, None, cache_mode="shared") == (
+        tmp_path / "cache" / "yfinance"
+    )
+    assert settings.resolve_yfinance_cache_dir(tmp_path, None, cache_mode="process") == (
+        tmp_path / "cache" / "yfinance" / "process-4242"
+    )
+    assert settings.resolve_yfinance_cache_dir(
+        tmp_path,
+        None,
+        cache_mode="run",
+        cache_namespace="run::unsafe/id",
+    ) == (tmp_path / "cache" / "yfinance" / "run-unsafe-id")
+    assert settings.resolve_yfinance_cache_dir(tmp_path, None, cache_mode="off") is None

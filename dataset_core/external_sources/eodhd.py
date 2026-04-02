@@ -19,6 +19,8 @@ from dataset_core.external_sources.base import (
     ExternalSourcePayloadError,
     ExternalSourceRateLimitError,
     attach_source_metadata,
+    filter_event_frame,
+    filter_reference_frame,
 )
 from dataset_core.serialization import write_json
 from dataset_core.settings import (
@@ -492,7 +494,11 @@ class EODHDPriceReferenceSource:
             except ExternalSourceNotFoundError as exc:
                 errors.append(f"{candidate}: {exc}")
                 continue
-            frame = parse_eodhd_prices(response.payload)
+            frame = filter_reference_frame(
+                parse_eodhd_prices(response.payload),
+                start=effective_start,
+                end=effective_end,
+            )
             provider_symbol = candidate
             break
 
@@ -616,7 +622,7 @@ class EODHDCorporateActionsReferenceSource:
         )
         if combined.empty:
             return attach_source_metadata(
-                combined,
+                filter_event_frame(combined, start=start, end=end),
                 {
                     "provider": "eodhd",
                     "source": "eodhd_corporate_actions",
@@ -640,7 +646,7 @@ class EODHDCorporateActionsReferenceSource:
             .reset_index(drop=True)
         )
         return attach_source_metadata(
-            aggregated,
+            filter_event_frame(aggregated, start=start, end=end),
             {
                 "provider": "eodhd",
                 "source": "eodhd_corporate_actions",
