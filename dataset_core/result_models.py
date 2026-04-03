@@ -58,6 +58,7 @@ class TickerResult:
     factor_source: Optional[str] = None
     provider_symbol: Optional[str] = None
     provider_warnings: list[str] = field(default_factory=list)
+    dataset_semantics: dict[str, object] = field(default_factory=dict)
     error_context: Optional[dict[str, object]] = None
     run_log_path: Optional[Path] = None
     artifacts: ArtifactPaths = field(default_factory=ArtifactPaths)
@@ -83,6 +84,7 @@ class TickerResult:
             "factor_source": self.factor_source,
             "provider_symbol": self.provider_symbol,
             "provider_warnings": list(self.provider_warnings),
+            "dataset_semantics": dict(self.dataset_semantics),
             "error_context": None if self.error_context is None else dict(self.error_context),
             "run_log_path": _path_or_none(self.run_log_path),
         }

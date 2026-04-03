@@ -153,7 +153,7 @@ def test_filename_override_cannot_escape_workspace_on_real_run(tmp_path, patch_m
             time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
             output_dir=workspace_root,
             dq_mode="off",
-            filename_override="..\\..\\escape?.csv",
+            filename_override="../nested/..\\escape?.csv",
         )
     )
     result = batch_result.results[0]
@@ -163,3 +163,37 @@ def test_filename_override_cannot_escape_workspace_on_real_run(tmp_path, patch_m
     assert result.artifacts.csv.parent == batch_result.csv_dir.resolve()
     assert workspace_root.resolve() in result.artifacts.csv.resolve().parents
     assert outside_target.read_text(encoding="utf-8") == "sentinel"
+
+
+def test_manifest_records_provider_missing_adj_close_without_synthetic_reconstruction(tmp_path, patch_market_context):
+    frame = make_provider_frame("MSFT").drop(columns=["adj_close"])
+    export_service = DatasetExportService(
+        acquisition_service=DummyAcquisitionService({"MSFT": frame})
+    )
+    batch_result = BatchOrchestrator(export_service=export_service).run(
+        DatasetRequest(
+            tickers=["MSFT"],
+            time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+            output_dir=tmp_path,
+            mode="extended",
+            extras=["adj_close"],
+            qlib_sanitization=True,
+            dq_mode="off",
+        )
+    )
+    result = batch_result.results[0]
+    meta_payload = json.loads(result.artifacts.meta.read_text(encoding="utf-8"))
+    manifest_payload = json.loads(result.artifacts.manifest.read_text(encoding="utf-8"))
+
+    provenance = meta_payload["sanitization_general"]["column_provenance"]["adj_close"]
+    manifest_provenance = manifest_payload["dataset_semantics"]["column_provenance"]["adj_close"]
+
+    assert provenance["state"] == "provider_missing"
+    assert provenance["synthetic"] is False
+    assert provenance["materialized_empty_column"] is True
+    assert manifest_provenance["state"] == "provider_missing"
+    assert manifest_provenance["synthetic"] is False
+    assert any(
+        warning["code"] == "adj_close_unavailable"
+        for warning in meta_payload["sanitization_general"]["structured_warnings"]
+    )

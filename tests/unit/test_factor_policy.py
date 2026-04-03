@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from dataset_core.factor_policy import FactorPolicyError, apply_factor_policy, compute_split_factor, resolve_provider_flags
+from dataset_core.sanitization_general import GeneralSanitizer
 from tests.fixtures.sample_data import (
     make_nvda_like_frame_without_adj_close,
     make_nvda_like_split_frame,
@@ -45,6 +46,16 @@ def test_apply_factor_policy_uses_split_fallback_when_adj_close_is_unavailable_b
 def test_apply_factor_policy_rejects_unsafe_split_fallback_when_close_is_already_adjusted():
     with pytest.raises(FactorPolicyError, match="double-adjust"):
         apply_factor_policy(make_nvda_like_frame_without_adj_close(), adjust_ohlcv=True)
+
+
+def test_apply_factor_policy_does_not_treat_materialized_missing_adj_close_as_real_provider_data():
+    frame = make_raw_split_frame().drop(columns=["adj_close"])
+    sanitized = GeneralSanitizer().sanitize(frame, requested_extras=["adj_close"])
+
+    result = apply_factor_policy(sanitized.frame, adjust_ohlcv=True)
+
+    assert result.factor_source == "stock_splits_fallback"
+    assert any("Primary factor path rejected" in warning for warning in result.warnings)
 
 
 def test_resolve_provider_flags_forces_raw_mode_when_factor_is_required():

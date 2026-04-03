@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+from threading import RLock
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 from uuid import uuid4
 
@@ -283,8 +284,15 @@ def _validate_date_range(
 
 
 def _intraday_chunk_timedelta(max_lookback_days: int) -> pd.Timedelta:
-    safe_days = max(1, max_lookback_days - 1)
-    return pd.Timedelta(days=safe_days)
+    return _intraday_lookback_timedelta(max_lookback_days)
+
+
+def _intraday_lookback_timedelta(max_lookback_days: int) -> pd.Timedelta:
+    return pd.Timedelta(days=max(1, max_lookback_days - 1))
+
+
+def _oldest_allowed_intraday_start(end: pd.Timestamp, max_lookback_days: int) -> pd.Timestamp:
+    return end - _intraday_lookback_timedelta(max_lookback_days)
 
 
 def _build_intraday_chunks(
@@ -547,6 +555,11 @@ class YFinanceProvider:
     - get_history_async(): async wrapper around get_history()
     """
 
+    # yfinance cache managers are process-wide singletons, so every cache
+    # reconfiguration is serialized and applied lazily at request time.
+    _cache_operation_lock = RLock()
+    _cache_configuration_signature: tuple[str, str | None] | None = None
+
     def __init__(
         self,
         max_workers: int | dict[str, object] = DEFAULT_MAX_WORKERS,
@@ -609,7 +622,7 @@ class YFinanceProvider:
         if self.max_intraday_lookback_days < 1:
             raise ProviderConfigurationError("max_intraday_lookback_days must be >= 1.")
 
-        self.effective_cache_dir = self._configure_project_cache(self.cache_dir, cache_mode=self.cache_mode)
+        self.effective_cache_dir = self._resolve_cache_dir(self.cache_dir, cache_mode=self.cache_mode)
         self.cache_enabled = self.effective_cache_dir is not None
 
     @staticmethod
@@ -662,14 +675,13 @@ class YFinanceProvider:
             yf_cache._ISINCacheManager._isin_cache = yf_cache._ISINCacheDummy()
 
     @staticmethod
-    def _configure_project_cache(
+    def _resolve_cache_dir(
         cache_dir: Path | None = None,
         *,
         cache_mode: str = DEFAULT_YFINANCE_CACHE_MODE,
     ) -> Path | None:
         normalized_mode = normalize_yfinance_cache_mode(cache_mode)
         if normalized_mode == "off":
-            YFinanceProvider._disable_project_cache()
             return None
 
         project_root = Path(__file__).resolve().parents[1]
@@ -704,8 +716,59 @@ class YFinanceProvider:
                 resolved_cache_dir,
                 exc,
             )
-            YFinanceProvider._disable_project_cache()
             return None
+
+    @classmethod
+    def _apply_project_cache_policy(
+        cls,
+        cache_dir: Path | None = None,
+        *,
+        cache_mode: str = DEFAULT_YFINANCE_CACHE_MODE,
+    ) -> Path | None:
+        normalized_mode = normalize_yfinance_cache_mode(cache_mode)
+        signature = (normalized_mode, None if cache_dir is None else str(Path(cache_dir).expanduser().resolve()))
+        if normalized_mode != "off" and cache_dir is None:
+            normalized_mode = "off"
+            signature = ("off", None)
+        if cls._cache_configuration_signature == signature:
+            return None if signature[0] == "off" else cache_dir
+        if signature[0] == "off":
+            cls._disable_project_cache()
+            cls._cache_configuration_signature = signature
+            return None
+
+        assert cache_dir is not None
+        resolved_cache_dir = Path(cache_dir).expanduser().resolve()
+        cls._reset_project_cache_state()
+        try:
+            import yfinance.cache as yf_cache
+
+            set_cache_location = getattr(yf_cache, "set_cache_location", None)
+            if callable(set_cache_location):
+                set_cache_location(str(resolved_cache_dir))
+            else:
+                yf.set_tz_cache_location(str(resolved_cache_dir))
+            cls._cache_configuration_signature = signature
+            return resolved_cache_dir
+        except Exception as exc:
+            logger.warning(
+                "Failed to activate yfinance sqlite cache at %s; disabling yfinance caches for this process. Reason: %s",
+                resolved_cache_dir,
+                exc,
+            )
+            cls._disable_project_cache()
+            cls._cache_configuration_signature = ("off", None)
+            return None
+
+    def _execute_with_cache_lock(self, operation):
+        with self._cache_operation_lock:
+            active_cache_dir = self._apply_project_cache_policy(
+                self.effective_cache_dir,
+                cache_mode=self.cache_mode if self.cache_enabled else "off",
+            )
+            self.effective_cache_dir = active_cache_dir
+            self.cache_enabled = active_cache_dir is not None
+            return operation()
 
     def _download_via_ticker(
         self,
@@ -716,24 +779,27 @@ class YFinanceProvider:
         auto_adjust: bool,
         actions: bool,
     ) -> pd.DataFrame:
-        ticker = yf.Ticker(symbol)
-        try:
-            return ticker.history(
-                start=start,
-                end=end,
-                interval=interval,
-                auto_adjust=auto_adjust,
-                actions=actions,
-                timeout=self.timeout,
-            )
-        except TypeError:
-            return ticker.history(
-                start=start,
-                end=end,
-                interval=interval,
-                auto_adjust=auto_adjust,
-                actions=actions,
-            )
+        def _history_request() -> pd.DataFrame:
+            ticker = yf.Ticker(symbol)
+            try:
+                return ticker.history(
+                    start=start,
+                    end=end,
+                    interval=interval,
+                    auto_adjust=auto_adjust,
+                    actions=actions,
+                    timeout=self.timeout,
+                )
+            except TypeError:
+                return ticker.history(
+                    start=start,
+                    end=end,
+                    interval=interval,
+                    auto_adjust=auto_adjust,
+                    actions=actions,
+                )
+
+        return self._execute_with_cache_lock(_history_request)
 
     def _download_via_download(
         self,
@@ -744,31 +810,34 @@ class YFinanceProvider:
         auto_adjust: bool,
         actions: bool,
     ) -> pd.DataFrame:
-        try:
-            raw = yf.download(
-                tickers=symbol,
-                start=start,
-                end=end,
-                interval=interval,
-                auto_adjust=auto_adjust,
-                actions=actions,
-                timeout=self.timeout,
-                progress=False,
-                threads=False,
-                keepna=True,
-            )
-        except TypeError:
-            raw = yf.download(
-                tickers=symbol,
-                start=start,
-                end=end,
-                interval=interval,
-                auto_adjust=auto_adjust,
-                actions=actions,
-                timeout=self.timeout,
-                progress=False,
-                threads=False,
-            )
+        def _download_request() -> pd.DataFrame:
+            try:
+                return yf.download(
+                    tickers=symbol,
+                    start=start,
+                    end=end,
+                    interval=interval,
+                    auto_adjust=auto_adjust,
+                    actions=actions,
+                    timeout=self.timeout,
+                    progress=False,
+                    threads=False,
+                    keepna=True,
+                )
+            except TypeError:
+                return yf.download(
+                    tickers=symbol,
+                    start=start,
+                    end=end,
+                    interval=interval,
+                    auto_adjust=auto_adjust,
+                    actions=actions,
+                    timeout=self.timeout,
+                    progress=False,
+                    threads=False,
+                )
+
+        raw = self._execute_with_cache_lock(_download_request)
         return _flatten_columns_if_needed(raw, symbol)
 
     def _download_via_download_many(
@@ -781,31 +850,34 @@ class YFinanceProvider:
         actions: bool,
     ) -> pd.DataFrame:
         tickers = " ".join(symbols)
-        try:
-            return yf.download(
-                tickers=tickers,
-                start=start,
-                end=end,
-                interval=interval,
-                auto_adjust=auto_adjust,
-                actions=actions,
-                timeout=self.timeout,
-                progress=False,
-                threads=False,
-                keepna=True,
-            )
-        except TypeError:
-            return yf.download(
-                tickers=tickers,
-                start=start,
-                end=end,
-                interval=interval,
-                auto_adjust=auto_adjust,
-                actions=actions,
-                timeout=self.timeout,
-                progress=False,
-                threads=False,
-            )
+        def _download_many_request() -> pd.DataFrame:
+            try:
+                return yf.download(
+                    tickers=tickers,
+                    start=start,
+                    end=end,
+                    interval=interval,
+                    auto_adjust=auto_adjust,
+                    actions=actions,
+                    timeout=self.timeout,
+                    progress=False,
+                    threads=False,
+                    keepna=True,
+                )
+            except TypeError:
+                return yf.download(
+                    tickers=tickers,
+                    start=start,
+                    end=end,
+                    interval=interval,
+                    auto_adjust=auto_adjust,
+                    actions=actions,
+                    timeout=self.timeout,
+                    progress=False,
+                    threads=False,
+                )
+
+        return self._execute_with_cache_lock(_download_many_request)
 
     @staticmethod
     def _extract_symbol_from_download(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -859,14 +931,14 @@ class YFinanceProvider:
         effective_start = start
 
         if effective_start is None:
-            effective_start = effective_end - pd.Timedelta(days=self.max_intraday_lookback_days - 1)
+            effective_start = _oldest_allowed_intraday_start(effective_end, self.max_intraday_lookback_days)
             warnings.append(
                 "Intraday request omitted start; effective_start was inferred from the configured intraday lookback window."
             )
 
         _validate_date_range(effective_start, effective_end)
 
-        oldest_allowed = effective_end - pd.Timedelta(days=self.max_intraday_lookback_days)
+        oldest_allowed = _oldest_allowed_intraday_start(effective_end, self.max_intraday_lookback_days)
         if effective_start < oldest_allowed:
             if not self.allow_partial_intraday:
                 raise RequestValidationError(
@@ -1504,6 +1576,7 @@ class YFinanceProvider:
             "cache_mode": self.cache_mode,
             "cache_dir": None if self.effective_cache_dir is None else str(self.effective_cache_dir),
             "cache_enabled": self.cache_enabled,
+            "cache_runtime_policy": "serialized_process_global",
             "allow_partial_intraday": self.allow_partial_intraday,
             "export_columns": list(EXPORT_COLUMNS),
         }

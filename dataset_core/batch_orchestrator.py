@@ -54,7 +54,11 @@ class BatchOrchestrator:
 
     @staticmethod
     def _effective_batch_workers(request: DatasetRequest, provider_session: object | None) -> int:
-        configured_workers = request.provider.batch_max_workers or request.provider.max_workers
+        configured_workers = (
+            request.provider.max_workers
+            if request.provider.batch_max_workers is None
+            else request.provider.batch_max_workers
+        )
         if configured_workers is not None:
             return max(1, int(configured_workers))
 
@@ -78,7 +82,11 @@ class BatchOrchestrator:
         *,
         cache_namespace: str | None = None,
     ) -> BatchRuntime:
-        metadata_timeout = request.provider.metadata_timeout or request.provider.timeout
+        metadata_timeout = (
+            request.provider.timeout
+            if request.provider.metadata_timeout is None
+            else request.provider.metadata_timeout
+        )
         cache_paths = resolve_effective_cache_paths(request.output_dir, request.provider.cache_dir)
         create_session = getattr(export_service.acquisition_service, "create_session", None)
         provider_session = None
@@ -91,7 +99,9 @@ class BatchOrchestrator:
         batch_chunk_size = self._effective_chunk_size(request, batch_max_workers)
         context_resolver = ContextResolver(
             metadata_timeout=metadata_timeout,
-            candidate_limit=request.provider.metadata_candidate_limit or DEFAULT_METADATA_CANDIDATE_LIMIT,
+            candidate_limit=DEFAULT_METADATA_CANDIDATE_LIMIT
+            if request.provider.metadata_candidate_limit is None
+            else request.provider.metadata_candidate_limit,
             cache_dir=cache_paths["market_context"],
             cache_ttl_seconds=request.provider.context_cache_ttl_seconds,
         )

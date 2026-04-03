@@ -75,6 +75,16 @@ def test_dataset_request_rejects_forbidden_qlib_extras():
         )
 
 
+def test_dataset_request_rejects_filename_override_in_qlib_mode():
+    with pytest.raises(RequestContractError, match="Custom filenames are not supported in qlib mode."):
+        DatasetRequest(
+            tickers=["MSFT"],
+            time_range=TemporalRange.from_inputs(years=5, start=None, end=None),
+            mode="qlib",
+            filename_override="custom.csv",
+        )
+
+
 def test_eodhd_config_repr_and_request_serialization_do_not_expose_api_key():
     secret = "unit-test-secret"
     request = DatasetRequest(

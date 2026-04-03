@@ -7,6 +7,7 @@ import pandas as pd
 
 _SPLIT_REL_TOLERANCE = 0.20
 _CONTINUITY_REL_TOLERANCE = 0.25
+_GENERAL_COLUMN_PROVENANCE_ATTR = "ab3_general_column_provenance"
 
 
 class FactorPolicyError(ValueError):
@@ -96,6 +97,14 @@ def _relative_match(observed: float, expected: float, tolerance: float) -> bool:
     if not np.isfinite(observed) or not np.isfinite(expected) or expected <= 0:
         return False
     return abs(observed - expected) / expected <= tolerance
+
+
+def _column_provenance(frame: pd.DataFrame, column: str) -> dict[str, object]:
+    provenance = getattr(frame, "attrs", {}).get(_GENERAL_COLUMN_PROVENANCE_ATTR, {})
+    if not isinstance(provenance, dict):
+        return {}
+    candidate = provenance.get(column, {})
+    return dict(candidate) if isinstance(candidate, dict) else {}
 
 
 def _sorted_numeric_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -208,9 +217,30 @@ def _adj_close_candidate(working: pd.DataFrame) -> _FactorCandidate:
     warnings: list[str] = []
     reasons: list[str] = []
     checks: list[dict[str, object]] = []
+    provenance = _column_provenance(working, "adj_close")
 
     if "adj_close" not in working.columns:
         reason = "adj_close is missing, so the primary Yahoo/Qlib factor path is unavailable."
+        _record_check(checks, "adj_close_available", False, "blocking", reason)
+        return _FactorCandidate(
+            factor=None,
+            factor_policy="factor_unavailable",
+            factor_source="adj_close_ratio",
+            qlib_reasons=[reason],
+            semantic_checks=checks,
+        )
+    if provenance.get("synthetic"):
+        reason = "adj_close is marked as synthetic, so the primary Yahoo/Qlib factor path is unavailable."
+        _record_check(checks, "adj_close_available", False, "blocking", reason)
+        return _FactorCandidate(
+            factor=None,
+            factor_policy="factor_unavailable",
+            factor_source="adj_close_ratio",
+            qlib_reasons=[reason],
+            semantic_checks=checks,
+        )
+    if provenance.get("state") == "provider_missing":
+        reason = "adj_close is unavailable from the provider, so the primary Yahoo/Qlib factor path is unavailable."
         _record_check(checks, "adj_close_available", False, "blocking", reason)
         return _FactorCandidate(
             factor=None,

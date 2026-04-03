@@ -1,6 +1,12 @@
 ﻿# Dataset Factory
 
-Generador profesional de datasets OHLCV con una sola arquitectura viva, saneamiento general obligatorio, saneamiento Qlib opcional/controlado, validacion interna, validacion externa pluggable y artefactos ordenados bajo `workspace/`.
+Generador profesional de datasets OHLCV con una sola arquitectura viva, saneamiento general obligatorio, saneamiento Qlib opcional/controlado, validacion interna y artefactos ordenados bajo `workspace/`.
+
+Estado operativo actual:
+
+- la validacion externa modular sigue integrada en el codigo, pero esta desactivada en esta build y su superficie publica visible queda oculta o marcada como no operativa
+- `--filename` solo es valido para runs single en presets generales; el contrato central lo rechaza en batch y en `qlib`
+- la caché de `yfinance` se trata como recurso global del proceso y sus reconfiguraciones se serializan explicitamente por operacion
 
 Contrato Qlib actual:
 
@@ -89,9 +95,12 @@ Artefacto Qlib en paralelo sobre una salida general:
 Cuando el flujo Qlib esta activo, el sistema:
 
 - ejecuta saneamiento general
+- rechaza nombres de fichero personalizados en todas las interfaces publicas
 - calcula `factor` con politica trazable: prioriza `adj_close/close` cuando la semantica es segura y usa `stock_splits` solo como fallback controlado
 - emite un CSV Qlib estricto con `date, open, high, low, close, volume, factor`
 - genera sidecar tecnico con la politica de factor y razones de compatibilidad
+
+Si `adj_close` falta o llega vacio desde proveedor, nunca se reconstruye como si fuese un precio ajustado real. El sistema conserva la ausencia de forma trazable en metadatos y solo permite que el camino de factores use fuentes semanticamente validas.
 
 La salida Qlib-ready queda preparada para los dos pasos finales externos:
 

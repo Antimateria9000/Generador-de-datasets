@@ -9,20 +9,13 @@ import streamlit as st
 from dataset_core import (
     BatchOrchestrator,
     DatasetRequest,
-    EODHDExternalValidationConfig,
-    ExternalValidationConfig,
     ProviderConfig,
     TemporalRange,
     parse_tickers_text,
 )
+from dataset_core.external_validation_runtime import build_external_validation_config
 from dataset_core.presets import resolve_preset
 from dataset_core.settings import (
-    DEFAULT_EODHD_BACKOFF_SECONDS,
-    DEFAULT_EODHD_BASE_URL,
-    DEFAULT_EODHD_CACHE_TTL_SECONDS,
-    DEFAULT_EODHD_MAX_RETRIES,
-    DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
-    DEFAULT_EODHD_TIMEOUT_SECONDS,
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_YFINANCE_CACHE_MODE,
     DQ_MODES,
@@ -86,7 +79,7 @@ def resolve_requested_eodhd_api_key(
 def _external_validation_disabled_ui_copy() -> tuple[str, str]:
     return (
         "Módulo de validación externa desactivado",
-        "Desactivado temporalmente. El pipeline actual utiliza únicamente validaciones internas.",
+        "Desactivado temporalmente. El pipeline actual utiliza únicamente validaciones internas; la UI no expone controles operativos y cualquier configuración residual se ignora de forma explícita.",
     )
 
 
@@ -180,6 +173,19 @@ def _build_request_from_form(
             raise ValueError(f"{label} debe ser > 0.")
         return value
 
+    def _parse_optional_non_negative_float(raw: str, label: str) -> float | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            value = float(text)
+        except ValueError as exc:
+            raise ValueError(f"{label} debe ser un numero mayor o igual que 0.") from exc
+        if value < 0:
+            raise ValueError(f"{label} debe ser >= 0.")
+        return value
+
+    effective_eodhd_api_key = None
     if is_external_validation_runtime_enabled():
         effective_eodhd_api_key = resolve_requested_eodhd_api_key(
             eodhd_api_key,
@@ -189,49 +195,37 @@ def _build_request_from_form(
             raise ValueError(
                 "EODHD requiere una API key. Define EODHD_API_KEY en el .env de la raiz del proyecto o introduce una key manual para esta sesion."
             )
-        external_validation = ExternalValidationConfig(
-            enabled=external_validation_enabled or None,
-            provider=None if not external_validation_provider.strip() else external_validation_provider.strip(),
-            reference_dir=None if not reference_dir.strip() else Path(reference_dir).expanduser().resolve(),
-            manual_events_file=None
-            if not manual_events_file.strip()
-            else Path(manual_events_file).expanduser().resolve(),
-            eodhd=EODHDExternalValidationConfig(
-                api_key=effective_eodhd_api_key,
-                base_url=eodhd_base_url.strip() or DEFAULT_EODHD_BASE_URL,
-                timeout_seconds=_parse_optional_positive_float(
-                    eodhd_timeout_seconds,
-                    "EODHD timeout",
-                )
-                or DEFAULT_EODHD_TIMEOUT_SECONDS,
-                use_cache=bool(eodhd_use_cache),
-                cache_dir=None if not eodhd_cache_dir.strip() else Path(eodhd_cache_dir).expanduser().resolve(),
-                cache_ttl_seconds=_parse_optional_non_negative_int(
-                    eodhd_cache_ttl_seconds,
-                    "EODHD cache TTL",
-                )
-                if eodhd_cache_ttl_seconds.strip()
-                else DEFAULT_EODHD_CACHE_TTL_SECONDS,
-                allow_partial_coverage=bool(eodhd_allow_partial_coverage),
-                max_retries=_parse_optional_positive_int(
-                    eodhd_max_retries,
-                    "EODHD max retries",
-                )
-                or DEFAULT_EODHD_MAX_RETRIES,
-                backoff_seconds=_parse_optional_positive_float(
-                    eodhd_backoff_seconds,
-                    "EODHD backoff",
-                )
-                or DEFAULT_EODHD_BACKOFF_SECONDS,
-                price_lookback_days=_parse_optional_positive_int(
-                    eodhd_price_lookback_days,
-                    "EODHD price lookback",
-                )
-                or DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
-            ),
-        )
-    else:
-        external_validation = ExternalValidationConfig()
+    external_validation = build_external_validation_config(
+        enabled=external_validation_enabled or None,
+        provider=external_validation_provider,
+        reference_dir=reference_dir,
+        manual_events_file=manual_events_file,
+        eodhd_api_key=effective_eodhd_api_key,
+        eodhd_base_url=None if not eodhd_base_url.strip() else eodhd_base_url.strip(),
+        eodhd_timeout_seconds=_parse_optional_positive_float(
+            eodhd_timeout_seconds,
+            "EODHD timeout",
+        ),
+        eodhd_use_cache=bool(eodhd_use_cache),
+        eodhd_cache_dir=eodhd_cache_dir,
+        eodhd_cache_ttl_seconds=_parse_optional_non_negative_int(
+            eodhd_cache_ttl_seconds,
+            "EODHD cache TTL",
+        ),
+        eodhd_allow_partial_coverage=bool(eodhd_allow_partial_coverage),
+        eodhd_max_retries=_parse_optional_positive_int(
+            eodhd_max_retries,
+            "EODHD max retries",
+        ),
+        eodhd_backoff_seconds=_parse_optional_non_negative_float(
+            eodhd_backoff_seconds,
+            "EODHD backoff",
+        ),
+        eodhd_price_lookback_days=_parse_optional_positive_int(
+            eodhd_price_lookback_days,
+            "EODHD price lookback",
+        ),
+    )
 
     return DatasetRequest(
         tickers=tickers,

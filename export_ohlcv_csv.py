@@ -8,25 +8,19 @@ from typing import Optional, Sequence
 from dataset_core import (
     BatchOrchestrator,
     DatasetRequest,
-    EODHDExternalValidationConfig,
-    ExternalValidationConfig,
     ProviderConfig,
     RequestContractError,
     TemporalRange,
     parse_extras,
     resolve_ticker_inputs,
 )
+from dataset_core.external_validation_runtime import build_external_validation_config
 from dataset_core.logging_runtime import SafeLogFormatter
 from dataset_core.settings import (
-    DEFAULT_EODHD_BACKOFF_SECONDS,
-    DEFAULT_EODHD_BASE_URL,
-    DEFAULT_EODHD_CACHE_TTL_SECONDS,
-    DEFAULT_EODHD_MAX_RETRIES,
-    DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
-    DEFAULT_EODHD_TIMEOUT_SECONDS,
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_YFINANCE_CACHE_MODE,
     DQ_MODES,
+    EXTERNAL_VALIDATION_DISABLED_REASON,
     LISTING_PREFERENCES,
     PRESET_NAMES,
     SUPPORTED_INTERVALS,
@@ -40,11 +34,20 @@ logger = logging.getLogger(LOGGER_NAME)
 
 
 def build_parser() -> argparse.ArgumentParser:
+    external_validation_runtime_enabled = is_external_validation_runtime_enabled()
     parser = argparse.ArgumentParser(
         description=(
             "Generate reproducible OHLCV datasets for single tickers or real batches, "
-            "including Qlib-ready output, internal DQ and pluggable external validation."
-        )
+            "including Qlib-ready output and internal DQ."
+            if not external_validation_runtime_enabled
+            else "including Qlib-ready output, internal DQ and pluggable external validation."
+        ),
+        epilog=(
+            f"External validation runtime is disabled in this build. {EXTERNAL_VALIDATION_DISABLED_REASON} "
+            "Compatibility flags remain accepted but are hidden from --help."
+            if not external_validation_runtime_enabled
+            else None
+        ),
     )
     ticker_group = parser.add_mutually_exclusive_group(required=True)
     ticker_group.add_argument("--ticker", type=str, help="Single ticker input.")
@@ -72,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--filename",
         default=None,
         type=str,
-        help="Custom CSV filename for single non-qlib runs. Not allowed for batch or qlib mode.",
+        help="Custom CSV filename for single base/extended runs. The central contract rejects it for batch and qlib mode.",
     )
     parser.add_argument("--auto-adjust", action="store_true", help="Request adjusted prices from yfinance.")
     parser.add_argument("--no-actions", action="store_true", help="Disable dividends and split retrieval.")
@@ -89,56 +92,59 @@ def build_parser() -> argparse.ArgumentParser:
         choices=LISTING_PREFERENCES,
         help="Listing resolution preference for unsuffixed tickers.",
     )
-    parser.add_argument("--reference-dir", default=None, type=str, help="Directory with reference CSVs for external validation.")
-    parser.add_argument("--manual-events-file", default=None, type=str, help="CSV/JSON file with manual split events.")
+    external_help = argparse.SUPPRESS if not external_validation_runtime_enabled else None
+    parser.add_argument("--reference-dir", default=None, type=str, help=external_help or "Directory with reference CSVs for external validation.")
+    parser.add_argument("--manual-events-file", default=None, type=str, help=external_help or "CSV/JSON file with manual split events.")
     parser.add_argument(
         "--external-validation-provider",
         default=None,
         choices=["csv", "eodhd"],
-        help="External validation provider. Defaults to legacy CSV/manual mode when reference paths are supplied.",
+        help=external_help
+        or "External validation provider. Defaults to legacy CSV/manual mode when reference paths are supplied.",
     )
     parser.add_argument(
         "--external-validation-enabled",
         action="store_true",
-        help="Force external validation on. Useful together with --external-validation-provider=eodhd.",
+        help=external_help or "Force external validation on. Useful together with --external-validation-provider=eodhd.",
     )
-    parser.add_argument("--eodhd-api-key", default=None, type=str, help="EODHD API key for modular external validation.")
-    parser.add_argument("--eodhd-base-url", default=None, type=str, help="Override the EODHD API base URL.")
+    parser.add_argument("--eodhd-api-key", default=None, type=str, help=external_help or "EODHD API key for modular external validation.")
+    parser.add_argument("--eodhd-base-url", default=None, type=str, help=external_help or "Override the EODHD API base URL.")
     parser.add_argument(
         "--eodhd-timeout-seconds",
         default=None,
         type=float,
-        help="Timeout for EODHD validation requests in seconds.",
+        help=external_help or "Timeout for EODHD validation requests in seconds.",
     )
     parser.add_argument(
         "--eodhd-no-cache",
         action="store_true",
-        help="Disable the optional EODHD validation cache.",
+        help=external_help or "Disable the optional EODHD validation cache.",
     )
-    parser.add_argument("--eodhd-cache-dir", default=None, type=str, help="Override EODHD validation cache directory.")
+    parser.add_argument("--eodhd-cache-dir", default=None, type=str, help=external_help or "Override EODHD validation cache directory.")
     parser.add_argument(
         "--eodhd-cache-ttl-seconds",
         default=None,
         type=int,
-        help="TTL for EODHD validation cache entries. Use 0 to disable cache reuse.",
+        help=external_help or "TTL for EODHD validation cache entries. Use 0 to disable cache reuse.",
     )
     parser.add_argument(
         "--eodhd-allow-partial-coverage",
         action="store_true",
-        help="Allow EODHD corporate actions validation to proceed when only dividends or splits are available.",
+        help=external_help
+        or "Allow EODHD corporate actions validation to proceed when only dividends or splits are available.",
     )
-    parser.add_argument("--eodhd-max-retries", default=None, type=int, help="Maximum EODHD retry attempts.")
+    parser.add_argument("--eodhd-max-retries", default=None, type=int, help=external_help or "Maximum EODHD retry attempts.")
     parser.add_argument(
         "--eodhd-backoff-seconds",
         default=None,
         type=float,
-        help="Base backoff in seconds for EODHD validation retries.",
+        help=external_help or "Base backoff in seconds for EODHD validation retries.",
     )
     parser.add_argument(
         "--eodhd-price-lookback-days",
         default=None,
         type=int,
-        help="Maximum trailing price history window requested from EODHD for external validation.",
+        help=external_help or "Maximum trailing price history window requested from EODHD for external validation.",
     )
     parser.add_argument("--provider-max-workers", default=None, type=int, help="Override provider max_workers.")
     parser.add_argument("--provider-retries", default=None, type=int, help="Override provider retries.")
@@ -246,8 +252,6 @@ def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
         tickers=args.tickers,
         tickers_file=args.tickers_file,
     )
-    if args.mode == "qlib" and args.filename:
-        raise RequestContractError("Custom filenames are not supported in qlib mode.")
 
     time_range = TemporalRange.from_inputs(
         years=args.years,
@@ -269,6 +273,7 @@ def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
         batch_max_workers=args.provider_batch_max_workers,
         batch_chunk_size=args.provider_batch_chunk_size,
     )
+    effective_eodhd_api_key = None
     if is_external_validation_runtime_enabled():
         effective_eodhd_api_key = resolve_requested_eodhd_api_key(
             args.eodhd_api_key,
@@ -278,30 +283,22 @@ def build_request_from_args(args: argparse.Namespace) -> DatasetRequest:
             effective_eodhd_api_key,
             external_validation_provider=args.external_validation_provider,
         )
-        external_validation = ExternalValidationConfig(
-            enabled=True if args.external_validation_enabled else None,
-            provider=args.external_validation_provider,
-            reference_dir=None if not args.reference_dir else Path(args.reference_dir).expanduser().resolve(),
-            manual_events_file=None
-            if not args.manual_events_file
-            else Path(args.manual_events_file).expanduser().resolve(),
-            eodhd=EODHDExternalValidationConfig(
-                api_key=effective_eodhd_api_key,
-                base_url=args.eodhd_base_url or DEFAULT_EODHD_BASE_URL,
-                timeout_seconds=args.eodhd_timeout_seconds or DEFAULT_EODHD_TIMEOUT_SECONDS,
-                use_cache=not bool(args.eodhd_no_cache),
-                cache_dir=None if not args.eodhd_cache_dir else Path(args.eodhd_cache_dir).expanduser().resolve(),
-                cache_ttl_seconds=DEFAULT_EODHD_CACHE_TTL_SECONDS
-                if args.eodhd_cache_ttl_seconds is None
-                else args.eodhd_cache_ttl_seconds,
-                allow_partial_coverage=bool(args.eodhd_allow_partial_coverage),
-                max_retries=args.eodhd_max_retries or DEFAULT_EODHD_MAX_RETRIES,
-                backoff_seconds=args.eodhd_backoff_seconds or DEFAULT_EODHD_BACKOFF_SECONDS,
-                price_lookback_days=args.eodhd_price_lookback_days or DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
-            ),
-        )
-    else:
-        external_validation = ExternalValidationConfig()
+    external_validation = build_external_validation_config(
+        enabled=True if args.external_validation_enabled else None,
+        provider=args.external_validation_provider,
+        reference_dir=args.reference_dir,
+        manual_events_file=args.manual_events_file,
+        eodhd_api_key=effective_eodhd_api_key,
+        eodhd_base_url=args.eodhd_base_url,
+        eodhd_timeout_seconds=args.eodhd_timeout_seconds,
+        eodhd_use_cache=not bool(args.eodhd_no_cache),
+        eodhd_cache_dir=args.eodhd_cache_dir,
+        eodhd_cache_ttl_seconds=args.eodhd_cache_ttl_seconds,
+        eodhd_allow_partial_coverage=bool(args.eodhd_allow_partial_coverage),
+        eodhd_max_retries=args.eodhd_max_retries,
+        eodhd_backoff_seconds=args.eodhd_backoff_seconds,
+        eodhd_price_lookback_days=args.eodhd_price_lookback_days,
+    )
 
     return DatasetRequest(
         tickers=tickers,
@@ -406,6 +403,7 @@ def export_one_ticker(
     provider_batch_chunk_size: Optional[int] = None,
     execution_mode: str = "concurrent",
 ) -> Path:
+    effective_eodhd_api_key = None
     if is_external_validation_runtime_enabled():
         effective_eodhd_api_key = resolve_requested_eodhd_api_key(
             eodhd_api_key,
@@ -415,30 +413,22 @@ def export_one_ticker(
             effective_eodhd_api_key,
             external_validation_provider=external_validation_provider,
         )
-        external_validation = ExternalValidationConfig(
-            enabled=external_validation_enabled,
-            provider=external_validation_provider,
-            reference_dir=None if not reference_dir else Path(reference_dir).expanduser().resolve(),
-            manual_events_file=None
-            if not manual_events_file
-            else Path(manual_events_file).expanduser().resolve(),
-            eodhd=EODHDExternalValidationConfig(
-                api_key=effective_eodhd_api_key,
-                base_url=eodhd_base_url or DEFAULT_EODHD_BASE_URL,
-                timeout_seconds=eodhd_timeout_seconds or DEFAULT_EODHD_TIMEOUT_SECONDS,
-                use_cache=bool(eodhd_use_cache),
-                cache_dir=None if not eodhd_cache_dir else Path(eodhd_cache_dir).expanduser().resolve(),
-                cache_ttl_seconds=DEFAULT_EODHD_CACHE_TTL_SECONDS
-                if eodhd_cache_ttl_seconds is None
-                else eodhd_cache_ttl_seconds,
-                allow_partial_coverage=bool(eodhd_allow_partial_coverage),
-                max_retries=eodhd_max_retries or DEFAULT_EODHD_MAX_RETRIES,
-                backoff_seconds=eodhd_backoff_seconds or DEFAULT_EODHD_BACKOFF_SECONDS,
-                price_lookback_days=eodhd_price_lookback_days or DEFAULT_EODHD_PRICE_LOOKBACK_DAYS,
-            ),
-        )
-    else:
-        external_validation = ExternalValidationConfig()
+    external_validation = build_external_validation_config(
+        enabled=external_validation_enabled,
+        provider=external_validation_provider,
+        reference_dir=reference_dir,
+        manual_events_file=manual_events_file,
+        eodhd_api_key=effective_eodhd_api_key,
+        eodhd_base_url=eodhd_base_url,
+        eodhd_timeout_seconds=eodhd_timeout_seconds,
+        eodhd_use_cache=bool(eodhd_use_cache),
+        eodhd_cache_dir=eodhd_cache_dir,
+        eodhd_cache_ttl_seconds=eodhd_cache_ttl_seconds,
+        eodhd_allow_partial_coverage=bool(eodhd_allow_partial_coverage),
+        eodhd_max_retries=eodhd_max_retries,
+        eodhd_backoff_seconds=eodhd_backoff_seconds,
+        eodhd_price_lookback_days=eodhd_price_lookback_days,
+    )
 
     request = DatasetRequest(
         tickers=[ticker],

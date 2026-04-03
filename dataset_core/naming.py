@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from dataset_core.contracts import DatasetRequest, TemporalRange
-from dataset_core.path_safety import assert_within_root, normalize_filename_override
+from dataset_core.path_safety import assert_within_root
 from dataset_core.settings import utc_now_token, utc_now_token_microseconds
 
 _SAFE_WITH_DOT_RE = re.compile(r"[^A-Z0-9._-]+")
@@ -97,6 +97,6 @@ def build_csv_filename(symbol: str, request: DatasetRequest, force_qlib_contract
         return f"{normalized}.csv"
 
     if request.filename_override:
-        return normalize_filename_override(request.filename_override)
+        return request.filename_override
 
     return f"{normalized}_{request.interval}_{build_range_tag(request.time_range)}.csv"

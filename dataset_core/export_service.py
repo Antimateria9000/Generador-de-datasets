@@ -113,9 +113,13 @@ class DatasetExportService:
             symbol=str(ticker or "").strip().upper(),
             market_override=market_override,
             listing_preference=request.listing_preference,
-            metadata_timeout=request.provider.metadata_timeout or request.provider.timeout,
+            metadata_timeout=request.provider.timeout
+            if request.provider.metadata_timeout is None
+            else request.provider.metadata_timeout,
             resolver=context_resolver,
-            candidate_limit=request.provider.metadata_candidate_limit or DEFAULT_METADATA_CANDIDATE_LIMIT,
+            candidate_limit=DEFAULT_METADATA_CANDIDATE_LIMIT
+            if request.provider.metadata_candidate_limit is None
+            else request.provider.metadata_candidate_limit,
             cache_dir=cache_paths["market_context"],
             cache_ttl_seconds=request.provider.context_cache_ttl_seconds,
         )
@@ -250,6 +254,10 @@ class DatasetExportService:
                 requested_extras=request.extras,
             )
             material_warnings.extend(general_result.warnings)
+            dataset_semantics = {
+                "column_provenance": dict(general_result.column_provenance),
+                "structured_warnings": list(general_result.structured_warnings),
+            }
 
             stage = "internal_validation"
             runtime_logger.info("Running internal validation.", extra={"stage": stage})
@@ -312,6 +320,7 @@ class DatasetExportService:
                     "factor_source": general_factor_source,
                     "qlib_compatible": False,
                     "qlib_reasons": [],
+                    "column_provenance": dict(general_result.column_provenance),
                 }
             else:
                 stage = "schema_build"
@@ -333,6 +342,7 @@ class DatasetExportService:
                     "factor_source": None,
                     "qlib_compatible": False,
                     "qlib_reasons": [],
+                    "column_provenance": dict(general_result.column_provenance),
                 }
 
             if request.qlib_sanitization:
@@ -461,7 +471,9 @@ class DatasetExportService:
                 "sanitization_general": {
                     "removed_rows": general_result.removed_rows,
                     "warnings": general_result.warnings,
+                    "structured_warnings": list(general_result.structured_warnings),
                     "columns": general_result.columns,
+                    "column_provenance": dict(general_result.column_provenance),
                 },
                 "status_resolution": {
                     "status": status_resolution.status,
@@ -531,6 +543,7 @@ class DatasetExportService:
                 factor_source=primary_factor_source,
                 provider_symbol=provider_symbol,
                 provider_warnings=provider_warnings,
+                dataset_semantics=dataset_semantics,
                 run_log_path=run_dirs.run_log_path,
                 artifacts=artifacts,
             )

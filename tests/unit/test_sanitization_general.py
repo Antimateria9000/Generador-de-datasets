@@ -24,9 +24,47 @@ def test_general_sanitizer_removes_duplicates_and_impossible_rows():
     assert any("impossible" in warning.lower() for warning in result.warnings)
 
 
-def test_general_sanitizer_backfills_adj_close_when_requested():
+def test_general_sanitizer_marks_missing_adj_close_without_reconstructing_from_close():
     frame = make_provider_frame(periods=3).drop(columns=["adj_close"])
     result = GeneralSanitizer().sanitize(frame, requested_extras=["adj_close"])
 
     assert "adj_close" in result.frame.columns
-    assert result.frame["adj_close"].tolist() == result.frame["close"].tolist()
+    assert result.frame["adj_close"].isna().all()
+    assert result.column_provenance["adj_close"]["state"] == "provider_missing"
+    assert result.column_provenance["adj_close"]["synthetic"] is False
+    assert result.column_provenance["adj_close"]["materialized_empty_column"] is True
+    assert any("provider did not supply usable adjusted-close values" in warning for warning in result.warnings)
+
+
+def test_general_sanitizer_removes_rows_with_all_zero_ohlc():
+    frame = make_provider_frame(periods=3)
+    frame.loc[1, ["open", "high", "low", "close"]] = 0.0
+
+    result = GeneralSanitizer().sanitize(frame, requested_extras=[])
+
+    assert len(result.frame) == 2
+    assert not ((result.frame[["open", "high", "low", "close"]] <= 0).any(axis=1)).any()
+    assert any("non-positive ohlc prices" in warning.lower() for warning in result.warnings)
+
+
+def test_general_sanitizer_removes_rows_with_single_zero_price_but_keeps_zero_volume():
+    frame = make_provider_frame(periods=3)
+    frame.loc[0, "open"] = 0.0
+    frame.loc[1, "volume"] = 0.0
+
+    result = GeneralSanitizer().sanitize(frame, requested_extras=[])
+
+    assert len(result.frame) == 2
+    assert (result.frame["volume"] == 0.0).any()
+    assert not (result.frame["open"] <= 0).any()
+
+
+def test_general_sanitizer_keeps_tiny_positive_prices():
+    frame = make_provider_frame(periods=2)
+    frame = frame.astype({"open": "float64", "high": "float64", "low": "float64", "close": "float64"})
+    frame.loc[0, ["open", "high", "low", "close"]] = [1e-9, 2e-9, 5e-10, 1.5e-9]
+
+    result = GeneralSanitizer().sanitize(frame, requested_extras=[])
+
+    assert len(result.frame) == 2
+    assert (result.frame.loc[0, ["open", "high", "low", "close"]] > 0).all()

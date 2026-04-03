@@ -471,12 +471,14 @@ class DatasetRequest:
             raise RequestContractError(f"Unsupported listing_preference: {self.listing_preference}")
         if self.dq_mode not in DQ_MODES:
             raise RequestContractError(f"Unsupported dq_mode: {self.dq_mode}")
-        if self.filename_override and len(normalized_tickers) != 1:
+        if self.filename_override is not None and len(normalized_tickers) != 1:
             raise RequestContractError("--filename can only be used with a single ticker request.")
+        if self.mode == "qlib" and self.filename_override is not None:
+            raise RequestContractError("Custom filenames are not supported in qlib mode.")
 
         object.__setattr__(self, "tickers", normalized_tickers)
         object.__setattr__(self, "output_dir", Path(self.output_dir).expanduser().resolve())
-        if self.filename_override:
+        if self.filename_override is not None:
             try:
                 object.__setattr__(self, "filename_override", normalize_filename_override(self.filename_override))
             except ValueError as exc:

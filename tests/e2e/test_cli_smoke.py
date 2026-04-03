@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
 from dataset_core.batch_orchestrator import BatchOrchestrator
+from dataset_core.contracts import RequestContractError
 from dataset_core.export_service import DatasetExportService
-from export_ohlcv_csv import build_parser, build_request_from_args, run_cli
+from dataset_core.settings import EXTERNAL_VALIDATION_DISABLED_REASON
+from export_ohlcv_csv import build_parser, build_request_from_args, export_one_ticker, run_cli
 from tests.fixtures.sample_data import DummyAcquisitionService, make_provider_frame
 
 
@@ -104,3 +108,43 @@ def test_cli_build_request_ignores_external_validation_runtime_arguments_while_m
     assert request.external_validation.resolved_provider() is None
     assert request.external_validation.eodhd.api_key is None
     assert request.external_validation.to_dict()["status"] == "disabled"
+
+
+def test_cli_help_hides_external_validation_flags_when_runtime_is_disabled():
+    help_text = build_parser().format_help()
+
+    assert "External validation runtime is disabled in this build." in help_text
+    assert "Compatibility flags remain accepted but are hidden from --help." in help_text
+    assert "Module disabled by" in help_text
+    assert "--external-validation-provider" not in help_text
+    assert "--eodhd-api-key" not in help_text
+
+
+def test_cli_and_api_share_the_same_qlib_filename_contract(tmp_path):
+    args = build_parser().parse_args(
+        [
+            "--ticker",
+            "MSFT",
+            "--years",
+            "5",
+            "--outdir",
+            str(tmp_path),
+            "--mode",
+            "qlib",
+            "--filename",
+            "custom.csv",
+        ]
+    )
+
+    with pytest.raises(RequestContractError, match="Custom filenames are not supported in qlib mode."):
+        build_request_from_args(args)
+    with pytest.raises(RequestContractError, match="Custom filenames are not supported in qlib mode."):
+        export_one_ticker(
+            ticker="MSFT",
+            years=5,
+            start=None,
+            end=None,
+            outdir=str(tmp_path),
+            mode="qlib",
+            filename="custom.csv",
+        )
